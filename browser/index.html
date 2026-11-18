@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#10202a">
+    <title>Flight School — Browser Edition</title>
+    <link rel="stylesheet" href="./style.css">
+  </head>
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <a class="brand" href="./">Flight School <span>Browser Edition</span></a>
+        <div class="top-actions">
+          <button id="pause-button" class="quiet" type="button" disabled>Pause</button>
+          <button id="view-button" class="quiet" type="button" disabled>External view</button>
+          <button id="mouse-button" class="quiet" type="button" disabled>Mouse steering: off</button>
+          <button id="gear-button" class="quiet" type="button" disabled>Landing gear (G)</button>
+          <button id="restart-button" class="quiet" type="button" disabled>Restart</button>
+          <button id="menu-button" class="quiet" type="button" disabled>Change flight</button>
+        </div>
+      </header>
+
+      <section id="setup" class="setup-panel">
+        <div class="intro">
+          <p class="eyebrow">A small flying game</p>
+          <h1>Take the controls.</h1>
+          <p>Choose an aircraft, pick two airports, and fly there. This is a simplified learning game, not a flight simulator.</p>
+        </div>
+        <form id="flight-form" class="flight-form">
+          <label>Aircraft
+            <select id="aircraft"></select>
+          </label>
+          <label>Departure
+            <select id="departure"></select>
+          </label>
+          <label>Destination
+            <select id="destination"></select>
+          </label>
+          <label>Wind
+            <select id="weather">
+              <option value="0">Calm</option>
+              <option value="4" selected>Light westerly — 4 m/s</option>
+              <option value="9">Breezy southwesterly — 9 m/s</option>
+            </select>
+          </label>
+          <p id="form-message" class="form-message" role="alert"></p>
+          <button class="primary" type="submit">Start flight</button>
+        </form>
+        <div class="getting-started">
+          <h2>First flight</h2>
+          <p>Try the Cessna in calm weather. Add full throttle, steer along the runway, then gently raise the nose around 55–60 knots. Follow the destination bearing and line up with its runway before landing.</p>
+          <p class="small-note">Game performance figures are not real-world operating guidance. Never use this game for real flying advice.</p>
+        </div>
+      </section>
+
+      <section id="game" class="game-panel" hidden>
+        <div class="canvas-wrap">
+          <canvas id="scene" tabindex="0" aria-label="Flight view"></canvas>
+          <div class="status-chip" id="status-chip">Ready</div>
+          <div class="map-card">
+            <canvas id="map" aria-label="Route map"></canvas>
+            <span>N ↑ &nbsp; Route map</span>
+          </div>
+        </div>
+        <div class="instrument-row">
+          <div><span>Airspeed</span><strong id="airspeed">0 kt</strong></div>
+          <div><span>Altitude</span><strong id="altitude">0 ft</strong></div>
+          <div><span>Heading</span><strong id="heading">000°</strong></div>
+          <div><span>Throttle</span><strong id="throttle">0%</strong></div>
+          <div><span>Vertical speed</span><strong id="vertical-speed">0 ft/min</strong></div>
+          <div><span>To destination</span><strong id="distance">—</strong></div>
+        </div>
+        <p id="flight-message" class="flight-message" aria-live="polite"></p>
+        <div class="controls">
+          <span><kbd>↑ / W</kbd> nose down <kbd>↓ / S</kbd> nose up</span>
+          <span><kbd>← / A</kbd> <kbd>→ / D</kbd> bank</span>
+          <span><kbd>Q / E</kbd> steer</span>
+          <span><kbd>+ / −</kbd> throttle · <kbd>Space</kbd> brake</span>
+          <span><kbd>G</kbd> landing gear · <kbd>L</kbd> instrument lights</span>
+          <span><kbd>V</kbd> view · <kbd>M</kbd> mouse steering · <kbd>P</kbd> pause · <kbd>R</kbd> restart · <kbd>Esc</kbd> menu</span>
+        </div>
+        <div class="touch-controls" aria-label="Touch flight controls">
+          <button type="button" data-control="left">Bank left</button>
+          <button type="button" data-control="up">Nose down</button>
+          <button type="button" data-control="down">Nose up</button>
+          <button type="button" data-control="right">Bank right</button>
+          <button type="button" data-control="throttle-up">Throttle +</button>
+          <button type="button" data-control="throttle-down">Throttle −</button>
+          <button type="button" data-control="brake">Brake</button>
+        </div>
+      </section>
+      <footer>Browser edition · Runs locally in your browser · No packages or account required</footer>
+    </main>
+    <script type="module" src="./game.mjs"></script>
+  </body>
+</html>

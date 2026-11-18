@@ -6,6 +6,8 @@ import tkinter as tk
 from tkinter import ttk
 
 from flight_model import AIRCRAFT, AIRPORTS, Flight, clamp
+from aircraft_visuals import aircraft_surfaces
+from scenery import LAND_SURFACES, clip_polygon, heathrow_scenery, regional_scenery, terrain
 
 
 class FlightSchool:
@@ -23,6 +25,8 @@ class FlightSchool:
         self.mouse_enabled = False
         self.mouse = (0, 0)
         self.last_frame = time.perf_counter()
+        self.london_ground, self.london_solids = heathrow_scenery()
+        self.regional_ground, self.regional_solids = regional_scenery()
         self._build_menu()
         root.bind("<KeyPress>", self._key_down)
         root.bind("<KeyRelease>", lambda event: self.keys.discard(event.keysym.lower()))
@@ -31,7 +35,7 @@ class FlightSchool:
         self.canvas.bind("<MouseWheel>", lambda event: self._wheel(event.delta / 120))
         self.canvas.bind("<Button-4>", lambda event: self._wheel(1))
         self.canvas.bind("<Button-5>", lambda event: self._wheel(-1))
-        self.canvas.bind("<Button-1>", lambda event: self.canvas.focus_set())
+        self.canvas.bind("<Button-1>", self._cockpit_click)
         self.show_menu()
         root.after(16, self._frame)
 
@@ -62,6 +66,7 @@ class FlightSchool:
                  "Throttle: + / − or mouse wheel     Pitch: ↑/↓ or W/S\n"
                  "Bank: ←/→ or A/D     Steering: Q/E     Brakes: Space\n"
                  "M: mouse steering     V: change view     P: pause\n"
+                 "G: landing gear     L: instrument lights\n"
                  "R: restart     Esc: choose a different flight\n\n"
                  "Simplified learning simulator — not for real-world training.",
         ).pack(pady=12)
@@ -105,6 +110,10 @@ class FlightSchool:
         elif key == "m":
             self.mouse_enabled = not self.mouse_enabled
             self.mouse = (0, 0)
+        elif key == "g" and self.flight and not self.paused:
+            self.flight.toggle_gear()
+        elif key == "l" and self.flight and not self.paused:
+            self.flight.lights_on = not self.flight.lights_on
         elif key == "r":
             self.start()
         elif key == "escape":
@@ -115,6 +124,25 @@ class FlightSchool:
             self.keys.clear()
             self.mouse = (0, 0)
             self.paused = True
+
+    def _cockpit_click(self, event):
+        self.canvas.focus_set()
+        if not self.flight or self.external or self.paused:
+            return
+        w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
+        if h * 0.79 + 12 <= event.y <= h * 0.79 + 42:
+            for x, action in ((0.69, self.flight.toggle_gear),
+                              (0.8, self._toggle_lights), (0.91, self._toggle_mouse)):
+                if abs(event.x - w * x) < w * 0.045:
+                    action()
+                    break
+
+    def _toggle_lights(self):
+        self.flight.lights_on = not self.flight.lights_on
+
+    def _toggle_mouse(self):
+        self.mouse_enabled = not self.mouse_enabled
+        self.mouse = (0, 0)
 
     def _mouse_move(self, event):
         w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
@@ -153,8 +181,9 @@ class FlightSchool:
         f = self.flight
         heading = math.radians(f.heading)
         if self.external:
-            self.eye = (f.x - math.sin(heading) * 85,
-                        f.y - math.cos(heading) * 85, f.z + 28)
+            distance, height = (32, 11) if f.aircraft == AIRCRAFT[0] else (85, 28)
+            self.eye = (f.x - math.sin(heading) * distance,
+                        f.y - math.cos(heading) * distance, f.z + height)
             pitch, bank = math.radians(-12), 0
         else:
             self.eye = (f.x, f.y, f.z + (2 if f.aircraft == AIRCRAFT[0] else 5))
@@ -178,36 +207,42 @@ class FlightSchool:
         return self.width / 2 + self.focal * x / depth, self.height / 2 - self.focal * y / depth
 
     def _clip(self, points):
-        # Clip polygons at the camera's near plane before dividing by depth.
-        result = []
-        for previous, current in zip(points[-1:] + points[:-1], points):
-            if (previous[2] >= 1) != (current[2] >= 1):
-                ratio = (1 - previous[2]) / (current[2] - previous[2])
-                result.append(tuple(a + ratio * (b - a) for a, b in zip(previous, current)))
-            if current[2] >= 1:
-                result.append(current)
-        return result
+        return clip_polygon(points, lambda p: p[2] - 1)
+
+    def _view_planes(self):
+        return (
+            lambda p: p[2] - 1,
+            lambda p: p[2] * self.width / 2 + p[0] * self.focal,
+            lambda p: p[2] * self.width / 2 - p[0] * self.focal,
+            lambda p: p[2] * self.height / 2 + p[1] * self.focal,
+            lambda p: p[2] * self.height / 2 - p[1] * self.focal,
+        )
 
     def _polygon(self, points, color):
         camera_points = [self._camera_point(point) for point in points]
-        if min(point[2] for point in camera_points) > 50000:
+        if (min(point[2] for point in camera_points) > 50000
+                or max(point[2] for point in camera_points) < 1):
             return
-        clipped = self._clip(camera_points)
+        clipped = camera_points
+        for plane in self._view_planes():
+            clipped = clip_polygon(clipped, plane)
         if len(clipped) >= 3:
             coordinates = [value for point in clipped for value in self._project(point)]
             self.canvas.create_polygon(*coordinates, fill=color, outline="")
 
     def _ground_line(self, first, second, color):
         a, b = self._camera_point(first), self._camera_point(second)
-        if a[2] < 1 and b[2] < 1:
-            return
-        if a[2] < 1 or b[2] < 1:
-            ratio = (1 - a[2]) / (b[2] - a[2])
-            intersection = tuple(x + ratio * (y - x) for x, y in zip(a, b))
-            if a[2] < 1:
-                a = intersection
-            else:
-                b = intersection
+        for plane in self._view_planes():
+            da, db = plane(a), plane(b)
+            if da < 0 and db < 0:
+                return
+            if (da >= 0) != (db >= 0):
+                ratio = da / (da - db)
+                intersection = tuple(x + ratio * (y - x) for x, y in zip(a, b))
+                if da < 0:
+                    a = intersection
+                else:
+                    b = intersection
         self.canvas.create_line(*self._project(a), *self._project(b), fill=color)
 
     @staticmethod
@@ -246,29 +281,19 @@ class FlightSchool:
     def _plane(self):
         f = self.flight
         heading, pitch, bank = map(math.radians, (f.heading, f.pitch, f.bank))
-        size = 1 if f.aircraft == AIRCRAFT[0] else 3
-
         def world(point):
-            across, along, up = (value * size for value in point)
+            across, along, up = point
             across, up = (across * math.cos(bank) + up * math.sin(bank),
                           up * math.cos(bank) - across * math.sin(bank))
             along, up = (along * math.cos(pitch) - up * math.sin(pitch),
                          up * math.cos(pitch) + along * math.sin(pitch))
             return (f.x + across * math.cos(heading) + along * math.sin(heading),
                     f.y - across * math.sin(heading) + along * math.cos(heading),
-                    f.z + 1.5 * size + up)
+                    f.z + (1.5 if f.aircraft == AIRCRAFT[0] else 3.3) + up)
 
-        surfaces = [
-            ([(-1, -4, 0), (0, 5, 0), (1, -4, 0)], "#eeeeee"),
-            ([(-5.5, -1, 0), (0, 1, 0), (5.5, -1, 0), (0, -2, 0)], "#d9e3ec"),
-            ([(-2, -3.5, 0), (2, -3.5, 0), (0, -2.5, 0)], "#f1b84e"),
-            ([(0, -4, 0), (0, -3.5, 2), (0, -2, 0)], "#e8ac36"),
-        ]
+        surfaces = aircraft_surfaces(f.aircraft, f.gear, f.time, f.engine_power)
         transformed = [([world(point) for point in points], color) for points, color in surfaces]
-        transformed.sort(key=lambda item: sum(self._camera_point(p)[2] for p in item[0]) / len(item[0]),
-                         reverse=True)
-        for points, color in transformed:
-            self._polygon(points, color)
+        return transformed
 
     def _map(self):
         f, c = self.flight, self.canvas
@@ -296,35 +321,96 @@ class FlightSchool:
     def draw(self):
         c, f = self.canvas, self.flight
         self.width, self.height = c.winfo_width(), c.winfo_height()
-        self.focal = self.width * 0.75
+        self.focal = self.width * (0.75 if self.external else 0.58)
         c.delete("all")
         self._camera()
-        extent = self.width * 5
-        horizon = self.height / 2 + self.focal * math.tan(self.camera_pitch)
-        slope = math.tan(self.camera_bank)
-        c.create_polygon(-extent, horizon + extent * slope,
-                         extent, horizon - extent * slope,
-                         extent, self.height + extent, -extent, self.height + extent,
-                         fill="#668852", outline="")
-        spacing = 1000
-        x0, y0 = int(f.x // spacing) * spacing, int(f.y // spacing) * spacing
-        for offset in range(-8, 9):
-            self._ground_line((x0 + offset * spacing, y0 - 8000, 0),
-                              (x0 + offset * spacing, y0 + 8000, 0), "#76965f")
-            self._ground_line((x0 - 8000, y0 + offset * spacing, 0),
-                              (x0 + 8000, y0 + offset * spacing, 0), "#76965f")
+        # A screen ray hits flat ground exactly when its world Z points down.
+        screen = [(0, 0), (self.width, 0), (self.width, self.height), (0, self.height)]
+        ground_screen = clip_polygon(screen, lambda p: -(
+            self.right[2] * (p[0] - self.width / 2) / self.focal
+            + self.up[2] * (self.height / 2 - p[1]) / self.focal + self.forward[2]))
+        if len(ground_screen) >= 3:
+            c.create_polygon(*[v for p in ground_screen for v in p], fill="#528c9c", outline="")
+        ground, solids = terrain(f.x, f.y)
+        solids = list(solids)
+        for points, color in LAND_SURFACES + ground + self.regional_ground + self.london_ground:
+            self._polygon(points, color)
         for airport in sorted(AIRPORTS, key=lambda a: math.dist(a.position, (f.x, f.y)), reverse=True):
             if math.dist(airport.position, (f.x, f.y)) < 50000:
                 self._runway(airport)
         if self.external:
-            self._plane()
-        else:
-            # A simple cockpit frame and instrument panel, not an aircraft replica.
-            c.create_line(0, self.height, self.width * 0.14, 0, fill="#26313b", width=16)
-            c.create_line(self.width, self.height, self.width * 0.86, 0, fill="#26313b", width=16)
-            c.create_rectangle(0, self.height - 155, self.width, self.height, fill="#202c36", outline="")
+            solids.extend(self._plane())
+        solids.extend(self.london_solids)
+        solids.extend((points, color) for points, color in self.regional_solids
+                      if any(math.hypot(p[0] - f.x, p[1] - f.y) < 40000 for p in points))
+        solids.sort(key=lambda item: sum(self._camera_point(p)[2] for p in item[0]) / len(item[0]),
+                    reverse=True)
+        for points, color in solids:
+            self._polygon(points, color)
+        if not self.external:
+            self._cockpit()
         self._hud()
         self._map()
+
+    def _cockpit(self):
+        c, f, w, h = self.canvas, self.flight, self.width, self.height
+        top = h * 0.79
+        ink = "#a9ebca" if f.lights_on else "#86958d"
+        c.create_line(0, top, w * 0.045, 90, fill="#26313b", width=9)
+        c.create_line(w, top, w * 0.955, 90, fill="#26313b", width=9)
+        c.create_rectangle(0, top, w, h, fill="#202c36", outline="#52616b", width=4)
+        radius = min(w * 0.035, h * 0.048)
+        for x, label, value, reading in (
+            (0.075, "AIRSPEED", f.airspeed / f.aircraft.max_speed, f"{f.airspeed * 1.94384:.0f} kt"),
+            (0.19, "ALTITUDE", (f.z * 3.28084 % 10000) / 10000, f"{f.z * 3.28084:.0f} ft"),
+            (0.305, "HEADING", f.heading / 360, f"{f.heading:03.0f}"),
+            (0.42, "CLIMB", clamp(0.5 + f.vz / 30, 0, 1), f"{f.vz * 196.85:+.0f} fpm"),
+        ):
+            cx, cy = w * x, top + radius + 16
+            c.create_oval(cx - radius, cy - radius, cx + radius, cy + radius,
+                          fill="#101b23", outline="#6b7c87", width=3)
+            for i in range(11):
+                angle = math.radians(-225 + i * 27)
+                c.create_line(cx + math.cos(angle) * radius * 0.78,
+                              cy + math.sin(angle) * radius * 0.78,
+                              cx + math.cos(angle) * radius * 0.92,
+                              cy + math.sin(angle) * radius * 0.92, fill=ink)
+            angle = math.radians(-225 + clamp(value, 0, 1) * 270)
+            c.create_line(cx, cy, cx + math.cos(angle) * radius * 0.72,
+                          cy + math.sin(angle) * radius * 0.72, fill="#f3ce77", width=3)
+            c.create_text(cx, cy + radius + 12, text=label, fill=ink, font=("", 8))
+            c.create_text(cx, cy + radius + 28, text=reading, fill=ink, font=("", 10))
+        sx, sy = w * 0.52, h - 28
+        grip_x, grip_y = sx + f.aileron * 23, sy - 47 + f.elevator * 18
+        c.create_oval(sx - 20, sy - 8, sx + 20, sy + 8, fill="#101820", outline="#66717b")
+        c.create_line(sx, sy, grip_x, grip_y, fill="#7e8d96", width=9)
+        c.create_rectangle(grip_x - 8, grip_y - 15, grip_x + 8, grip_y + 5,
+                           fill="#111a21", outline="#7b8d98", width=2)
+        c.create_oval(grip_x - 3, grip_y - 12, grip_x + 3, grip_y - 6, fill="#d95746")
+        for i in range(1 if f.aircraft == AIRCRAFT[0] else 2):
+            tx = w * 0.59 + i * 18
+            c.create_rectangle(tx - 4, top + 20, tx + 4, h - 30, fill="#0c141b", outline="#66717b")
+            ty = h - 36 - f.throttle * (h - top - 64)
+            c.create_line(tx, h - 28, tx, ty, fill="#8d9ba4", width=4)
+            c.create_rectangle(tx - 9, ty - 6, tx + 9, ty + 6, fill="#dde0d6", outline="#555f64")
+        c.create_text(w * 0.61, h - 14, text=f"THRUST {f.engine_power:.0%}", fill=ink, font=("", 8))
+        for x, label in ((0.69, "GEAR [G]"), (0.8, "LIGHTS [L]"), (0.91, "MOUSE [M]")):
+            c.create_rectangle(w * (x - 0.045), top + 12, w * (x + 0.045), top + 42,
+                               fill="#394b58", outline="#81939d")
+            c.create_text(w * x, top + 27, text=label, fill=ink, font=("", 9))
+        gear_color = "#73ec94" if f.gear >= 0.99 else "#edb64d" if f.gear > 0.01 else "#36434c"
+        for x in (0.67, 0.69, 0.71):
+            c.create_oval(w * x - 4, top + 51, w * x + 4, top + 59, fill=gear_color)
+        c.create_text(w * 0.69, top + 74, text="DOWN" if f.gear >= 0.99 else
+                      "TRANSIT" if f.gear > 0.01 else "UP", fill=ink, font=("", 8))
+        for x, label, active in ((0.8, "POWER", f.engine_power > 0.1),
+                                 (0.91, "STALL", f.stalled)):
+            c.create_oval(w * x - 5, top + 51, w * x + 5, top + 61,
+                          fill=("#f17252" if f.stalled and label == "STALL" else "#73ec94")
+                          if active else "#36434c")
+            c.create_text(w * x, top + 74, text=label, fill=ink, font=("", 8))
+        c.create_text(w * 0.82, top + 99,
+                      text=f"PITCH {f.pitch:+.0f}   BANK {f.bank:+.0f}", fill=ink, font=("", 9))
 
     def _hud(self):
         c, f = self.canvas, self.flight
@@ -350,16 +436,15 @@ class FlightSchool:
             mx, my = self.mouse
             c.create_oval(cx + mx * 70 - 5, cy - my * 70 - 5,
                           cx + mx * 70 + 5, cy - my * 70 + 5, outline="white")
-        c.create_rectangle(0, h - 100, w, h, fill="#172936", outline="")
-        c.create_text(18, h - 80, anchor="w", fill="#ffd47d", text=f.message, font=("", 12))
-        c.create_text(18, h - 51, anchor="w", fill="white",
-                      text="↑/W nose down · ↓/S nose up · ←/A →/D bank · Q/E steer · +/− throttle · Space brake")
-        c.create_text(18, h - 25, anchor="w", fill="white",
-                      text="V views (1 cockpit, 2 external) · M mouse · Wheel throttle · P pause · R restart · Esc menu")
-        if not self.external:
-            c.create_text(w / 2, h - 128, fill="#a9ebca", font=("TkFixedFont", 12),
-                          text=f"PITCH {f.pitch:+5.1f}°   BANK {f.bank:+5.1f}°   "
-                               f"GROUND {f.ground_speed * 1.94384:.0f} kt")
+        if self.external:
+            c.create_rectangle(0, h - 100, w, h, fill="#172936", outline="")
+            c.create_text(18, h - 80, anchor="w", fill="#ffd47d", text=f.message, font=("", 12))
+            c.create_text(18, h - 51, anchor="w", fill="white",
+                          text="Arrows/WASD pitch/bank · Q/E steer · +/− throttle · Space brake · G gear · L lights")
+            c.create_text(18, h - 25, anchor="w", fill="white",
+                          text="V views · M mouse · Wheel throttle · P pause · R restart · Esc menu")
+        else:
+            c.create_text(18, 103, anchor="w", fill="#fff3aa", text=f.message, font=("", 10))
         warning = ("PAUSED — P to continue" if self.paused else
                    "FLIGHT COMPLETE" if f.completed else "FLIGHT ENDED — R to retry" if f.crashed else
                    "STALL — lower the nose" if f.stalled else

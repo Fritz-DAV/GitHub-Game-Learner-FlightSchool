@@ -119,6 +119,80 @@ class FlightTests(unittest.TestCase):
         flight.update(0.2, elevator=1)
         self.assertEqual(before, (flight.x, flight.y, flight.z))
 
+    def test_control_inertia_and_engine_spool_are_aircraft_dependent(self):
+        responses = []
+        for aircraft in AIRCRAFT:
+            flight = Flight(aircraft, wind_speed=0)
+            flight.on_ground = False
+            flight.z, flight.vx, flight.throttle = 1000, 70, 1
+            flight.update(0.1, elevator=1, aileron=1, rudder=1)
+            self.assertTrue(0 < flight.pitch < 0.2)
+            self.assertTrue(0 < flight.bank < 0.5)
+            self.assertTrue(0 < flight.engine_power < 0.2)
+            self.assertEqual((flight.elevator, flight.aileron, flight.rudder), (1, 1, 1))
+            before, rate = flight.bank, flight.roll_rate
+            flight.update(0.1)
+            self.assertGreater(flight.bank, before)
+            self.assertTrue(0 < flight.roll_rate < rate)
+            self.assertEqual(flight.aileron, 0)
+            responses.append((flight.pitch, flight.engine_power))
+        self.assertGreater(responses[0][0], responses[1][0] * 2)
+        self.assertGreater(responses[0][1], responses[1][1] * 3)
+
+    def test_stationary_aircraft_cannot_rotate_and_engine_spools_down(self):
+        flight = Flight(wind_speed=0)
+        flight.update(0.25, elevator=1, aileron=1)
+        self.assertEqual((flight.pitch, flight.bank), (0, 0))
+        flight.engine_power = 1
+        flight.update(0.1)
+        self.assertTrue(0.8 < flight.engine_power < 1)
+
+    def test_gear_is_fixed_or_ground_locked_and_jets_cycle_in_five_seconds(self):
+        for aircraft in AIRCRAFT:
+            flight = Flight(aircraft, wind_speed=0)
+            flight.toggle_gear()
+            self.assertTrue(flight.gear_down)
+            flight.on_ground = False
+            flight.z, flight.vx = 1000, 100 if flight.retractable_gear else 50
+            flight.toggle_gear()
+            if not flight.retractable_gear:
+                flight.update(0.25)
+                self.assertEqual(flight.gear, 1)
+                continue
+            for _ in range(10):
+                flight.update(0.25)
+            self.assertAlmostEqual(flight.gear, 0.5)
+            for _ in range(10):
+                flight.update(0.25)
+            self.assertAlmostEqual(flight.gear, 0)
+            flight.toggle_gear()
+            for _ in range(20):
+                flight.update(0.25)
+            self.assertAlmostEqual(flight.gear, 1)
+            self.assertFalse(flight.crashed)
+
+    def test_extended_gear_adds_drag_and_gear_up_landings_fail(self):
+        for aircraft in AIRCRAFT[1:]:
+            extended, retracted = [Flight(aircraft, wind_speed=0) for _ in range(2)]
+            for flight in (extended, retracted):
+                flight.on_ground = False
+                flight.z, flight.vx = 1000, 100
+            retracted.gear, retracted.gear_down = 0, False
+            extended.update(0.1)
+            retracted.update(0.1)
+            self.assertGreater(retracted.vx, extended.vx)
+            for gear in (0, 0.5, 0.98, 1):
+                flight = Flight(aircraft, wind_speed=0)
+                flight.x, flight.y = flight.destination.position
+                flight.heading = flight.destination.runway_heading
+                flight.z, flight.vz, flight.vx = 0.01, -1, 65
+                flight.on_ground = False
+                flight.gear = gear
+                flight.gear_down = gear == 1
+                flight.update(0.02)
+                self.assertEqual(flight.completed, gear == 1)
+                self.assertEqual(flight.crashed, gear != 1)
+
 
 if __name__ == "__main__":
     unittest.main()

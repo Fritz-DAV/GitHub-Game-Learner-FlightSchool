@@ -76,8 +76,8 @@ class Flight:
     """Approximate point-mass flight: lift, drag, thrust, gravity and wind.
 
     Aircraft dimensions are representative, not certified performance data.
-    Pitch and bank respond directly to controls rather than modelling every
-    moving surface. Wind changes airspeed, not just the displayed ground track.
+    Damped angular rates and engine spool provide aircraft-dependent inertia.
+    Wind changes airspeed, not just the displayed ground track.
     """
 
     def __init__(self, aircraft=AIRCRAFT[0], departure=AIRPORTS[0],
@@ -93,6 +93,12 @@ class Flight:
         self.vx = self.vy = self.vz = 0.0
         self.heading = departure.runway_heading
         self.pitch = self.bank = self.throttle = 0.0
+        self.engine_power = 0.0
+        self.elevator = self.aileron = self.rudder = 0.0
+        self.pitch_rate = self.roll_rate = self.yaw_rate = 0.0
+        self.gear_down = True
+        self.gear = 1.0
+        self.lights_on = True
         self.wind_speed = wind_speed
         self.wind_from = wind_from
         self.gusts = gusts
@@ -124,6 +130,21 @@ class Flight:
         dx, dy = east - self.x, north - self.y
         return math.hypot(dx, dy), math.degrees(math.atan2(dx, dy)) % 360
 
+    @property
+    def retractable_gear(self):
+        return self.aircraft != AIRCRAFT[0]
+
+    def toggle_gear(self):
+        if self.crashed or self.completed:
+            return
+        if not self.retractable_gear:
+            self.message = "The Cessna has fixed landing gear."
+        elif self.on_ground:
+            self.message = "Landing gear is locked down while on the ground."
+        else:
+            self.gear_down = not self.gear_down
+            self.message = "Landing gear lowering." if self.gear_down else "Landing gear retracting."
+
     def update(self, dt, elevator=0, aileron=0, rudder=0, brake=False):
         if self.crashed or self.completed or dt <= 0:
             return
@@ -137,15 +158,30 @@ class Flight:
 
     def _step(self, dt, elevator, aileron, rudder, brake):
         self.time += dt
-        self.pitch = clamp(self.pitch + elevator * 12 * dt, -25, 30)
-        self.bank = clamp(self.bank + aileron * 35 * dt, -65, 65)
-        if self.on_ground:
-            self.bank = 0
+        self.elevator, self.aileron, self.rudder = elevator, aileron, rudder
+        jet = self.retractable_gear
+        response = 1.1 if jet else 0.4
+        self.engine_power += (clamp(self.throttle, 0, 1) - self.engine_power) * (
+            1 - math.exp(-dt / (3.5 if jet else 0.65)))
+        self.gear = clamp(self.gear + (1 if self.gear_down else -1) * dt / 5, 0, 1)
         speed = self.airspeed
+        authority = clamp((speed / (65 if jet else 28)) ** 2, 0, 1)
+        blend = 1 - math.exp(-dt / response)
+        self.pitch_rate += (elevator * (6 if jet else 12) * authority - self.pitch_rate) * blend
+        self.roll_rate += (aileron * (18 if jet else 35) * authority - self.roll_rate) * blend
+        self.pitch = clamp(self.pitch + self.pitch_rate * dt, -25, 30)
+        self.bank = clamp(self.bank + self.roll_rate * dt, -65, 65)
+        if self.pitch in (-25, 30):
+            self.pitch_rate = 0
+        if self.bank in (-65, 65):
+            self.roll_rate = 0
+        if self.on_ground:
+            self.bank = self.roll_rate = 0
         turn = 0 if self.on_ground else math.degrees(
             G * math.tan(math.radians(self.bank)) / max(speed, 25))
         steer = min(self.ground_speed / 5, 1) if self.on_ground else 0.3
-        self.heading = (self.heading + (turn + rudder * 12 * steer) * dt) % 360
+        self.yaw_rate += (rudder * (7 if jet else 12) * steer - self.yaw_rate) * blend
+        self.heading = (self.heading + (turn + self.yaw_rate) * dt) % 360
         heading, pitch, bank = map(math.radians, (self.heading, self.pitch, self.bank))
         fx, fy = math.sin(heading), math.cos(heading)
         wx, wy = self.wind
@@ -160,13 +196,14 @@ class Flight:
         density = 1.225 * math.exp(-max(self.z, 0) / 8500)
         pressure = 0.5 * density * speed * speed
         lift = pressure * self.aircraft.wing_area * cl
-        drag = pressure * self.aircraft.wing_area * (0.03 + 0.055 * cl * cl)
+        gear_drag = 0.018 * self.gear if jet else 0.012
+        drag = pressure * self.aircraft.wing_area * (0.03 + gear_drag + 0.055 * cl * cl)
         # Lift is perpendicular to air-relative motion; banking tilts it sideways.
         ux, uy = (ax / horizontal, ay / horizontal) if horizontal > 1 else (fx, fy)
         lx = -math.sin(gamma) * ux * math.cos(bank) + uy * math.sin(bank)
         ly = -math.sin(gamma) * uy * math.cos(bank) - ux * math.sin(bank)
         lz = math.cos(gamma) * math.cos(bank)
-        thrust = self.throttle * self.aircraft.max_thrust
+        thrust = self.engine_power * self.aircraft.max_thrust
         mass = self.aircraft.mass
         accelerations = [
             (thrust * math.cos(pitch) * fx + lift * lx - drag * ax / max(speed, 0.1)) / mass,
@@ -189,7 +226,7 @@ class Flight:
         self.x += self.vx * dt
         self.y += self.vy * dt
         self.z += self.vz * dt
-        if self.z > 0.1:
+        if self.z > 0.1 and self.on_ground:
             self.on_ground = False
             self.has_flown = True
             self.message = "Airborne! Follow the destination bearing; keep an eye on airspeed."
@@ -203,6 +240,10 @@ class Flight:
             self.message = "Overspeed: the aircraft was damaged. Press R to try again."
 
     def _touchdown(self):
+        if self.gear < 0.99:
+            self.crashed = True
+            self.message = "Landing gear was not fully down. Press R to try again."
+            return
         runway = next((airport for airport in AIRPORTS if airport.contains(self.x, self.y)), None)
         alignment = 180 if runway is None else abs(
             (self.heading - runway.runway_heading + 90) % 180 - 90)
