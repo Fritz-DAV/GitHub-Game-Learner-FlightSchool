@@ -124,7 +124,7 @@ class Flight:
         dx, dy = east - self.x, north - self.y
         return math.hypot(dx, dy), math.degrees(math.atan2(dx, dy)) % 360
 
-    def update(self, dt, elevator=0, aileron=0, rudder=0):
+    def update(self, dt, elevator=0, aileron=0, rudder=0, brake=False):
         if self.crashed or self.completed or dt <= 0:
             return
         # Bound a delayed frame, then integrate small steps for stable landings.
@@ -132,10 +132,10 @@ class Flight:
         while remaining > 1e-9 and not (self.crashed or self.completed):
             step = min(remaining, 1 / 120)
             self._step(step, clamp(elevator, -1, 1),
-                       clamp(aileron, -1, 1), clamp(rudder, -1, 1))
+                       clamp(aileron, -1, 1), clamp(rudder, -1, 1), brake)
             remaining -= step
 
-    def _step(self, dt, elevator, aileron, rudder):
+    def _step(self, dt, elevator, aileron, rudder, brake):
         self.time += dt
         self.pitch = clamp(self.pitch + elevator * 12 * dt, -25, 30)
         self.bank = clamp(self.bank + aileron * 35 * dt, -65, 65)
@@ -176,7 +176,7 @@ class Flight:
         if self.on_ground:
             # Tyre grip prevents sideways skating in a crosswind.
             forward = self.vx * fx + self.vy * fy
-            rolling = min(abs(forward) / dt, 0.025 * G)
+            rolling = min(abs(forward) / dt, (0.025 + 0.3 * bool(brake)) * G)
             along = accelerations[0] * fx + accelerations[1] * fy
             forward = max(0, forward + (along - rolling) * dt)
             self.vx, self.vy = forward * fx, forward * fy

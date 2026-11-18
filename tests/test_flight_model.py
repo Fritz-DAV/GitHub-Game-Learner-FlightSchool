@@ -1,4 +1,3 @@
-import math
 import unittest
 
 from flight_model import AIRCRAFT, AIRPORTS, Flight
@@ -26,6 +25,13 @@ class FlightTests(unittest.TestCase):
             for _ in range(600):
                 flight.update(1 / 60)
             self.assertGreater(flight.ground_speed, 10)
+
+    def test_brakes_slow_the_ground_roll(self):
+        flight = Flight(wind_speed=0)
+        flight.vx = 20
+        flight.update(0.25, brake=True)
+        self.assertLess(flight.ground_speed, 19.5)
+        self.assertEqual(flight.z, 0)
 
     def test_wind_changes_airspeed_not_ground_speed(self):
         flight = Flight(wind_speed=10, wind_from=270, gusts=False)
