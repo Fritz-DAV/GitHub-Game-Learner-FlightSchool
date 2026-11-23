@@ -76,7 +76,7 @@ test("horizon and near clipping retain only the correct half-space", () => {
 });
 
 test("cities use star-shaped outlines that are not ellipses, with London and Paris hand-shaped", () => {
-  assert.equal(CITY_OUTLINES.length, 14);
+  assert.equal(CITY_OUTLINES.length, 15);
   for (const city of CITY_OUTLINES) {
     const [cx, cy] = city.centre;
     const angles = city.points.map(([x, y]) => Math.atan2(y - cy, x - cx));

@@ -60,6 +60,31 @@
           <canvas id="scene" tabindex="0" aria-label="Flight view"></canvas>
           <div class="status-chip" id="status-chip">Ready</div>
           <div class="damage-alerts" id="damage-alerts" role="alert"></div>
+          <section id="summary" class="summary" aria-labelledby="summary-title" hidden>
+            <h2 id="summary-title">Flight complete</h2>
+            <p id="summary-route" class="summary-route"></p>
+            <div class="score-grid">
+              <div><span>Take-off</span><strong id="score-takeoff">0</strong><small>/ 100</small></div>
+              <div><span>Flight</span><strong id="score-flight">0</strong><small>/ 100</small></div>
+              <div><span>Landing</span><strong id="score-landing">0</strong><small>/ 100</small></div>
+              <div class="overall"><span>Overall</span><strong id="score-overall">0</strong><small>/ 100</small></div>
+            </div>
+            <dl class="summary-stats">
+              <div><dt>Total time</dt><dd id="stat-time">—</dd></div>
+              <div><dt>Time airborne</dt><dd id="stat-airborne">—</dd></div>
+              <div><dt>Distance flown</dt><dd id="stat-distance">—</dd></div>
+              <div><dt>Planned route</dt><dd id="stat-planned">—</dd></div>
+            </dl>
+            <div class="summary-charts">
+              <figure><canvas id="summary-map" aria-label="Flight path against planned route"></canvas><figcaption>Route flown against the planned route</figcaption></figure>
+              <figure><canvas id="summary-altitude" aria-label="Altitude through the flight"></canvas><figcaption>Altitude through the flight</figcaption></figure>
+            </div>
+            <div class="summary-actions">
+              <button id="summary-again" class="primary" type="button">Fly again</button>
+              <button id="summary-menu" class="quiet" type="button">Change flight</button>
+              <button id="summary-close" class="quiet" type="button">Close</button>
+            </div>
+          </section>
           <div class="map-card">
             <canvas id="map" aria-label="Route map"></canvas>
             <span>N ↑ &nbsp; Route map &amp; cloud cover</span>

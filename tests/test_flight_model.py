@@ -11,6 +11,12 @@ class FlightTests(unittest.TestCase):
                 self.assertTrue(airport.contains(flight.x, flight.y))
                 self.assertEqual(flight.heading, airport.runway_heading)
 
+    def test_secondary_runways_count_as_the_airport_runway(self):
+        for airport in AIRPORTS:
+            for runway in airport.extra_runways:
+                self.assertTrue(airport.contains(*runway.position))
+                self.assertIs(airport.runway_at(*runway.position), runway)
+
     def test_idle_aircraft_stays_on_ground(self):
         flight = Flight(wind_speed=0)
         for _ in range(120):

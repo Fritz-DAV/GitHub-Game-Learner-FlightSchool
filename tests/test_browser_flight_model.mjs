@@ -2,8 +2,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  AIRCRAFT, AIRPORTS, Flight, airportPosition, runwayContains, clampLook, nextTimeScale,
+  AIRCRAFT, AIRPORTS, Flight, airportPosition, runwayContains, runwayAt, clampLook, nextTimeScale,
 } from "../browser/flight-model.mjs";
+import { flyToArrival } from "./arrival_helper.mjs";
+
+test("secondary runways count as the airport runway", () => {
+  for (const airport of AIRPORTS) {
+    for (const runway of airport.extraRunways ?? []) {
+      assert.equal(runwayAt(airport, ...airportPosition(runway)), runway);
+    }
+  }
+});
 
 test("each aircraft starts on each airport's runway", () => {
   for (const aircraft of AIRCRAFT) {
@@ -245,4 +254,19 @@ test("look angles wrap yaw and limit pitch; fast-forward cycles 1x to 8x", () =>
   const seen = [];
   for (let i = 0; i < 5; i += 1) seen.push(scale = nextTimeScale(scale));
   assert.deepEqual(seen, [2, 4, 8, 1, 2]);
+});
+
+test("a landing at the destination is rated out of 100 with time, distance and a track", () => {
+  const f = flyToArrival();
+  assert.equal(f.completed, true, f.message);
+  const summary = f.summary();
+  for (const key of ["takeoff", "flight", "landing", "overall"]) {
+    assert.ok(Number.isInteger(summary.scores[key]) && summary.scores[key] >= 0 && summary.scores[key] <= 100, key);
+  }
+  assert.ok(summary.scores.takeoff > 80 && summary.scores.landing > 60);
+  assert.ok(summary.time > 20 && summary.airborneTime > 0 && summary.airborneTime < summary.time);
+  assert.ok(summary.distance > 500);
+  assert.ok(summary.track.length > 10 && summary.track.some((p) => p[2] > 20));
+  const hard = flyToArrival(AIRPORTS[0], AIRPORTS[2], 4).summary();
+  assert.ok(hard.scores.landing < summary.scores.landing);
 });

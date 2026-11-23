@@ -1,4 +1,4 @@
-import { AIRPORTS, airportPosition, runwayCoordinates } from "./flight-model.mjs";
+import { AIRPORTS, airportPosition, allRunways, runwayCoordinates } from "./flight-model.mjs";
 
 const fieldColors = ["#718953", "#82935e", "#647e49", "#96976a", "#748654"];
 export const THAMES = [[3500, -4000], [6500, -4800], [9500, -3000], [13000, -3300],
@@ -36,6 +36,7 @@ export const CITIES = [
   ["Maidstone", 0.52, 51.27, 2800], ["Canterbury", 1.08, 51.28, 2300],
   ["Dover", 1.31, 51.13, 1800], ["Calais", 1.85, 50.95, 3000],
   ["Amiens", 2.3, 49.89, 4000], ["Paris", 2.35, 48.86, 14000],
+  ["Edinburgh", -3.19, 55.95, 6500],
 ];
 export const ROADS = [
   ["M25", [[-0.55, 51.43], [-0.57, 51.58], [-0.4, 51.72], [-0.05, 51.72],
@@ -80,7 +81,7 @@ const CITY_SHAPES = {
 const TOWN_STYLE = {
   Slough: [1.5, 0], Watford: [1.3, 70], Luton: [1.2, 40], Harlow: [1.2, 90],
   Chelmsford: [1.2, 20], Cambridge: [1.1, 0], Southend: [1.9, 0], Maidstone: [1.3, 60],
-  Canterbury: [1.1, 30], Dover: [1.7, 35], Calais: [1.4, 10], Amiens: [1.2, 90],
+  Canterbury: [1.1, 30], Dover: [1.7, 35], Calais: [1.4, 10], Amiens: [1.2, 90], Edinburgh: [1.3, 0],
 };
 function townShape(name) {
   let hash = 7;
@@ -244,8 +245,10 @@ function ribbon(points, width, color) {
 
 export function airportClear(x, y) {
   for (const airport of AIRPORTS) {
-    const [along, across] = runwayCoordinates(airport, x, y);
-    if (Math.abs(along) < airport.runwayLength / 2 + 450 && Math.abs(across) < 1200) return false;
+    for (const runway of allRunways(airport)) {
+      const [along, across] = runwayCoordinates(runway, x, y);
+      if (Math.abs(along) < runway.runwayLength / 2 + 450 && Math.abs(across) < 1200) return false;
+    }
   }
   const [hx, hy] = airportPosition(AIRPORTS[0]);
   for (let i = 1; i < THAMES.length; i += 1) {
@@ -326,10 +329,65 @@ function ribbon3d(a, b, width, color) {
     [b[0] + width, b[1], b[2]], [a[0] + width, a[1], a[2]]], color]];
 }
 
+// Simplified terminal layouts as [east, north, width, depth, height] from each airport's
+// reference point. Heathrow's entries add to the original buildings in heathrowScenery.
+const TERMINALS = {
+  EGLL: [[-1950, -580, 420, 150, 26], [-2450, -850, 420, 70, 18], [-3200, -950, 380, 70, 18],
+    [1050, -2150, 360, 130, 22], [1050, -2330, 300, 45, 12]],
+  EGPH: [[250, 520, 260, 90, 20], [350, 620, 180, 35, 12], [-650, 520, 200, 70, 14],
+    [-1100, 480, 150, 50, 9]],
+  LFPG: [[2400, -1100, 700, 70, 22], [3300, -650, 500, 70, 20], [4300, -950, 300, 90, 15]],
+};
+const TOWERS = { EGLL: [], EGPH: [[-80, 380]], LFPG: [[1700, -350]] };
+
+function airportScenery(airport) {
+  const [ax, ay] = airportPosition(airport);
+  const ground = [];
+  const solids = [];
+  const blocks = [...(TERMINALS[airport.code] ?? [])];
+  if (airport.code === "LFPG") {
+    // Terminal 1 is a round main building ringed by seven satellites.
+    blocks.push([700, -600, 110, 110, 30]);
+    for (let i = 0; i < 7; i += 1) {
+      const angle = i * Math.PI * 2 / 7;
+      blocks.push([700 + 170 * Math.cos(angle), -600 + 170 * Math.sin(angle), 40, 40, 12]);
+    }
+  }
+  for (const [dx, dy, w, d, h] of blocks) {
+    const x = ax + dx;
+    const y = ay + dy;
+    if (h > 12) {
+      ground.push([[[x - w / 2 - 60, y - d - 80, 0.03], [x + w / 2 + 60, y - d - 80, 0.03],
+        [x + w / 2 + 60, y + d + 80, 0.03], [x - w / 2 - 60, y + d + 80, 0.03]], "#89908a"]);
+      let across = Infinity;
+      let heading = 0;
+      for (const runway of allRunways(airport)) {
+        const value = runwayCoordinates(runway, x, y)[1];
+        if (Math.abs(value) < Math.abs(across)) {
+          across = value;
+          heading = runway.runwayHeading * Math.PI / 180;
+        }
+      }
+      ground.push(...ribbon([[x, y], [x - across * Math.cos(heading), y + across * Math.sin(heading)]],
+        28, "#737b7c"));
+    }
+    solids.push(...box(x, y, w, d, h));
+  }
+  for (const [dx, dy] of TOWERS[airport.code] ?? []) {
+    solids.push(...box(ax + dx, ay + dy, 18, 18, 65), ...box(ax + dx, ay + dy, 40, 35, 12, 65));
+  }
+  return { ground, solids };
+}
+
 export function heathrowScenery() {
   const [hx, hy] = airportPosition(AIRPORTS[0]);
   const ground = ribbon(THAMES.map(([x, y]) => [hx + x, hy + y]), 220, "#468b9e");
   const solids = [];
+  for (const airport of AIRPORTS) {
+    const extra = airportScenery(airport);
+    ground.push(...extra.ground);
+    solids.push(...extra.solids);
+  }
   for (const [dx, dy, w, d] of [[-1250, 650, 400, 180], [150, 500, 500, 150], [1000, -650, 450, 180]]) {
     const x = hx + dx;
     const y = hy + dy;

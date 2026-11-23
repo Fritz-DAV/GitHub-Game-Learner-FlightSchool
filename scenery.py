@@ -43,6 +43,7 @@ CITIES = (
     ("Maidstone", 0.52, 51.27, 2800), ("Canterbury", 1.08, 51.28, 2300),
     ("Dover", 1.31, 51.13, 1800), ("Calais", 1.85, 50.95, 3000),
     ("Amiens", 2.3, 49.89, 4000), ("Paris", 2.35, 48.86, 14000),
+    ("Edinburgh", -3.19, 55.95, 6500),
 )
 ROADS = (
     ("M25", ((-0.55, 51.43), (-0.57, 51.58), (-0.4, 51.72), (-0.05, 51.72),
@@ -194,9 +195,10 @@ def ribbon(points, width, color):
 
 def airport_clear(x, y):
     for airport in AIRPORTS:
-        along, across = airport.runway_coordinates(x, y)
-        if abs(along) < airport.runway_length / 2 + 450 and abs(across) < 1200:
-            return False
+        for runway in airport.runways:
+            along, across = runway.runway_coordinates(x, y)
+            if abs(along) < runway.runway_length / 2 + 450 and abs(across) < 1200:
+                return False
     hx, hy = AIRPORTS[0].position
     for (ax, ay), (bx, by) in zip(THAMES, THAMES[1:]):
         dx, dy = bx - ax, by - ay
@@ -243,10 +245,57 @@ def _terrain(cx, cy):
     return ground, solids
 
 
+# Simplified terminal layouts as (east, north, width, depth, height) from each airport's
+# reference point. Heathrow's entries add to the original buildings in heathrow_scenery.
+TERMINALS = {
+    "EGLL": ((-1950, -580, 420, 150, 26), (-2450, -850, 420, 70, 18),
+             (-3200, -950, 380, 70, 18), (1050, -2150, 360, 130, 22),
+             (1050, -2330, 300, 45, 12)),
+    "EGPH": ((250, 520, 260, 90, 20), (350, 620, 180, 35, 12),
+             (-650, 520, 200, 70, 14), (-1100, 480, 150, 50, 9)),
+    "LFPG": ((2400, -1100, 700, 70, 22), (3300, -650, 500, 70, 20),
+             (4300, -950, 300, 90, 15)),
+}
+# Towers are (east, north) from the reference point.
+TOWERS = {"EGLL": (), "EGPH": ((-80, 380),), "LFPG": ((1700, -350),)}
+
+
+def airport_scenery(airport):
+    ax, ay = airport.position
+    ground, solids = [], []
+    blocks = list(TERMINALS.get(airport.code, ()))
+    if airport.code == "LFPG":
+        # Terminal 1 is a round main building ringed by seven satellites.
+        blocks.append((700, -600, 110, 110, 30))
+        for i in range(7):
+            angle = i * math.tau / 7
+            blocks.append((700 + 170 * math.cos(angle), -600 + 170 * math.sin(angle), 40, 40, 12))
+    for dx, dy, w, d, h in blocks:
+        x, y = ax + dx, ay + dy
+        if h > 12:
+            ground.append(([(x - w / 2 - 60, y - d - 80, 0.03), (x + w / 2 + 60, y - d - 80, 0.03),
+                            (x + w / 2 + 60, y + d + 80, 0.03), (x - w / 2 - 60, y + d + 80, 0.03)],
+                           "#89908a"))
+            runway = min(airport.runways, key=lambda r: abs(r.runway_coordinates(x, y)[1]))
+            across = runway.runway_coordinates(x, y)[1]
+            heading = math.radians(runway.runway_heading)
+            ground.extend(ribbon([(x, y), (x - across * math.cos(heading),
+                                           y + across * math.sin(heading))], 28, "#737b7c"))
+        solids.extend(box(x, y, w, d, h))
+    for dx, dy in TOWERS.get(airport.code, ()):
+        solids.extend(box(ax + dx, ay + dy, 18, 18, 65))
+        solids.extend(box(ax + dx, ay + dy, 40, 35, 12, 65))
+    return ground, solids
+
+
 def heathrow_scenery():
     hx, hy = AIRPORTS[0].position
     ground = ribbon([(hx + x, hy + y) for x, y in THAMES], 220, "#468b9e")
     solids = []
+    for airport in AIRPORTS:
+        extra_ground, extra_solids = airport_scenery(airport)
+        ground.extend(extra_ground)
+        solids.extend(extra_solids)
     for x, y, w, d in ((-1250, 650, 400, 180), (150, 500, 500, 150),
                         (1000, -650, 450, 180)):
         x, y = hx + x, hy + y

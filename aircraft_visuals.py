@@ -138,7 +138,7 @@ def aircraft_hull(aircraft):
     return tuple(surfaces)
 
 
-def aircraft_surfaces(aircraft, gear, time=0, engine_power=0):
+def aircraft_surfaces(aircraft, gear, time=0, engine_power=0, damage=()):
     surfaces = list(aircraft_hull(aircraft))
     cessna = aircraft == AIRCRAFT[0]
     datum = aircraft.datum
@@ -160,18 +160,43 @@ def aircraft_surfaces(aircraft, gear, time=0, engine_power=0):
         positions = ((-1.2 if cessna else -2.7, -1.1 if cessna else -2.5),
                      (1.2 if cessna else 2.7, -1.1 if cessna else -2.5),
                      (0, 2.5 if cessna else 12))
-    for x, y in positions:
-        wheel_z = -0.65 + (-datum + wheel_radius + 0.65) * gear
+    kinds = set(damage)
+    main_broken = bool(kinds & {"gear", "terrain"})
+    for index, (x, y) in enumerate(positions):
+        if main_broken and index < 2 or "nose_gear" in kinds and index == 2:
+            surfaces.extend(_broken_leg(x, y, -datum, wheel_radius, cessna))
+            continue
+        flat = "tyres" in kinds
+        radius = wheel_radius * (0.55 if flat else 1)
+        wheel_z = -0.65 + (-datum + radius + 0.65) * gear
         wheel_x = x * gear
         surfaces.append(([(wheel_x - 0.06, y, -0.5), (wheel_x + 0.06, y, -0.5),
                           (wheel_x + 0.06, y, wheel_z), (wheel_x - 0.06, y, wheel_z)], "#bbc5ca"))
         for offset in ((0,) if cessna else (-0.28, 0.28)):
-            rings = [[(wheel_x + offset + side * wheel_radius * 0.35,
-                       y + wheel_radius * math.cos(i * math.tau / 10),
-                       wheel_z + wheel_radius * math.sin(i * math.tau / 10))
+            # Burst tyres sag and spread, with a dark red scorched sidewall.
+            half_width = wheel_radius * (0.55 if flat else 0.35)
+            rings = [[(wheel_x + offset + side * half_width,
+                       y + radius * math.cos(i * math.tau / 10),
+                       wheel_z + radius * math.sin(i * math.tau / 10))
                       for i in range(10)] for side in (-1, 1)]
             surfaces.extend((ring, "#20272c") for ring in rings)
             surfaces.extend(([rings[0][i], rings[0][(i + 1) % 10],
-                              rings[1][(i + 1) % 10], rings[1][i]], "#30373b")
+                              rings[1][(i + 1) % 10], rings[1][i]],
+                             "#7a2f2f" if flat else "#30373b")
                             for i in range(10))
     return surfaces
+
+
+def _broken_leg(x, y, ground, radius, cessna):
+    """A sheared strut stub with its wheel lying flat on the ground beside it."""
+    side = 1 if x >= 0 else -1
+    reach = 0.6 if cessna else 1.6
+    stub = [(x - 0.06, y, -0.5), (x + 0.06, y, -0.5),
+            (x + side * 0.4 + 0.06, y, -0.5 - 0.45), (x + side * 0.4 - 0.06, y, -0.5 - 0.45)]
+    wx, wy, wz = x + side * reach, y + radius * 1.6, ground + 0.06
+    disc = [[(wx + radius * math.cos(i * math.tau / 10),
+              wy + radius * math.sin(i * math.tau / 10), wz + lift)
+             for i in range(10)] for lift in (0, 0.25 * radius)]
+    return [(stub, "#bbc5ca")] + [(ring, "#20272c") for ring in disc] + [
+        ([disc[0][i], disc[0][(i + 1) % 10], disc[1][(i + 1) % 10], disc[1][i]], "#30373b")
+        for i in range(10)]

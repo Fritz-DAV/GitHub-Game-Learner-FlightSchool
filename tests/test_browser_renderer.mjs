@@ -25,6 +25,21 @@ test("distinct aircraft have representative spans, ground-level wheels and retra
   assert.notDeepEqual(meshes[1], meshes[2]);
 });
 
+test("damaged landing gear and tyres change the aircraft model", () => {
+  for (const aircraft of AIRCRAFT) {
+    const healthy = aircraftSurfaces(aircraft, 1);
+    const wheels = (mesh) => mesh.filter(([, color]) => color === "#20272c").flatMap(([p]) => p);
+    const flat = aircraftSurfaces(aircraft, 1, 0, 0, ["tyres"]);
+    assert.ok(Math.max(...wheels(flat).map((p) => p[2])) < Math.max(...wheels(healthy).map((p) => p[2])));
+    assert.ok(flat.some(([, color]) => color === "#7a2f2f"));
+    for (const kind of ["gear", "nose_gear"]) {
+      const broken = aircraftSurfaces(aircraft, 1, 0, 0, [kind]);
+      assert.notDeepEqual(broken, healthy);
+      assert.ok(wheels(broken).some((p) => p[2] < -aircraft.datum + 0.5));
+    }
+  }
+});
+
 test("browser UI renders every aircraft and route in both views without off-screen geometry", async () => {
   let polygons = 0;
   let path = [];

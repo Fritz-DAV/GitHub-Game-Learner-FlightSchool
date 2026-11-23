@@ -2,13 +2,15 @@
 
 A playable Python starter for learning to build a flying game with GitHub Copilot.
 Fly a **Cessna 172 Skyhawk**, **Boeing 737-800**, **Airbus A320**, or supersonic **Concorde** between
-**Heathrow (EGLL)**, **Charles De Gaulle (LFPG)**, and **Stansted (EGSS)**.
+**Heathrow (EGLL)**, **Charles De Gaulle (LFPG)**, and **Stansted (EGSS)**, and **Edinburgh (EGPH)**.
 Each airport has a runway, with edge, centreline and threshold markings.
+Heathrow has both of its parallel runways and Paris CDG its four, and Heathrow, Edinburgh and
+CDG have simplified terminal buildings, aprons and control towers. Landing on any of an airport's runways counts.
 Choose different departure and destination airports before each flight.
 Both editions and both camera views include patchwork fields, hedgerows and
 trees that stay fixed as you fly. Approximate British and French coastlines
 separate land from the English Channel. Towns and city districts include London,
-Cambridge, Harlow, Chelmsford, Canterbury, Dover, Calais, Amiens and Paris.
+Cambridge, Harlow, Chelmsford, Canterbury, Dover, Calais, Amiens, Paris and Edinburgh.
 Follow simplified M25, M11, M1, M4, M20, M2 and A-road corridors between airports.
 The Chilterns and North/South Downs provide southern relief; larger mountain
 meshes are placed farther west/north in Eryri, Dartmoor and the Lake District,
@@ -128,6 +130,14 @@ The cockpit's **GEAR**, **LIGHTS** and **MOUSE** buttons are also clickable.
 Browser touch users can use the **Landing gear** button above the view.
 Three green gear lights mean fully down, amber means moving, and dark means up.
 
+### Flight summary and damage
+
+After a completed landing, a summary screen rates the take-off, flight and landing out of 100 (plus an
+overall score), and shows time taken, distance flown, your flight path against the planned route on a map,
+and an altitude chart. In the desktop app press **Enter** to hide or show it; **R** flies again.
+Hard landings are visible on the aircraft: burst tyres show flattened dark-red wheels, and broken-off
+landing gear leaves sheared stubs with the wheels lying on the ground.
+
 ## Your first flight
 
 1. Pick the **Cessna**, **calm** weather and Heathrow → Stansted for the shorter
@@ -142,9 +152,9 @@ Three green gear lights mean fully down, amber means moving, and dark means up.
    level flight and reduce power as needed. If **STALL** appears, lower the nose
    to regain speed. Reduce power if you approach the overspeed warning.
 5. Follow the destination bearing shown at the top. Bank gently to turn, then
-   use opposite bank input to level the wings. The map shows all three airports.
+   use opposite bank input to level the wings. The map shows all four airports.
 6. On approach, line up with the runway centreline: roughly **090°/270°** at
-   Heathrow and Paris, **040°/220°** at Stansted. The bearing points to the airport,
+   Heathrow and Paris, **040°/220°** at Stansted, **060°/240°** at Edinburgh. The bearing points to the airport,
    not an automatic landing path; plan your turn to align before descending.
 7. Lower a jet's gear with `G` at least **five seconds** before touchdown and
    check for three green lights. Reduce power and lower the nose gently.

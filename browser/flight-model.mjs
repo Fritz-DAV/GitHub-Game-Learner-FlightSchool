@@ -37,9 +37,16 @@ const DAMAGE = Object.freeze({
 });
 
 export const AIRPORTS = Object.freeze([
-  Object.freeze({ name: "Heathrow Airport, London", code: "EGLL", latitude: 51.4775, longitude: -0.4614, runwayHeading: 90, runwayLength: 3902, runwayWidth: 50 }),
-  Object.freeze({ name: "Charles De Gaulle Airport, Paris", code: "LFPG", latitude: 49.0097, longitude: 2.5479, runwayHeading: 90, runwayLength: 4200, runwayWidth: 60 }),
+  Object.freeze({ name: "Heathrow Airport, London", code: "EGLL", latitude: 51.4775, longitude: -0.4614, runwayHeading: 90, runwayLength: 3902, runwayWidth: 50,
+    extraRunways: [{ latitude: 51.4649, longitude: -0.459, runwayHeading: 90, runwayLength: 3660, runwayWidth: 50 }] }),
+  Object.freeze({ name: "Charles De Gaulle Airport, Paris", code: "LFPG", latitude: 49.0097, longitude: 2.5479, runwayHeading: 90, runwayLength: 4200, runwayWidth: 60,
+    extraRunways: [
+      { latitude: 49.016, longitude: 2.556, runwayHeading: 90, runwayLength: 2700, runwayWidth: 60 },
+      { latitude: 48.9957, longitude: 2.5822, runwayHeading: 85, runwayLength: 4215, runwayWidth: 45 },
+      { latitude: 48.9893, longitude: 2.575, runwayHeading: 85, runwayLength: 2700, runwayWidth: 60 },
+    ] }),
   Object.freeze({ name: "Stansted Airport, United Kingdom", code: "EGSS", latitude: 51.885, longitude: 0.235, runwayHeading: 40, runwayLength: 3049, runwayWidth: 46 }),
+  Object.freeze({ name: "Edinburgh Airport, Edinburgh", code: "EGPH", latitude: 55.95, longitude: -3.3725, runwayHeading: 60, runwayLength: 2556, runwayWidth: 46 }),
 ]);
 
 export const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
@@ -68,6 +75,14 @@ export function runwayContains(airport, x, y) {
   const [along, across] = runwayCoordinates(airport, x, y);
   return Math.abs(along) <= airport.runwayLength / 2
     && Math.abs(across) <= airport.runwayWidth / 2;
+}
+
+export function allRunways(airport) {
+  return [airport, ...(airport.extraRunways ?? [])];
+}
+
+export function runwayAt(airport, x, y) {
+  return allRunways(airport).find((runway) => runwayContains(runway, x, y));
 }
 
 export const LOOK_PITCH_LIMIT = 80;
@@ -115,6 +130,11 @@ export class Flight {
     this.unflyable = false;
     this.veer = 1;
     this.assessAtRest = false;
+    this.track = [[this.x, this.y, 0, 0]];
+    this.nextSample = 1;
+    this.distance = this.airDistance = 0;
+    this.stallTime = this.overspeedTime = this.maxBank = this.takeoffOffset = 0;
+    this.takeoffStats = this.landingStats = null;
     this.message = "Ready: add throttle, build speed, then gently raise the nose.";
   }
 
@@ -292,7 +312,9 @@ export class Flight {
     this.x += this.vx * dt;
     this.y += this.vy * dt;
     this.z += this.vz * dt;
+    this.record(dt, wasAirborne);
     if (this.z > 0.1 && this.onGround) {
+      if (!this.hasFlown) this.recordLiftoff();
       this.onGround = false;
       this.hasFlown = true;
       this.message = "Airborne! Follow the destination bearing; keep an eye on airspeed.";
@@ -307,7 +329,7 @@ export class Flight {
       this.message = "Overspeed: the aircraft was damaged. Press R to try again.";
     } else if (this.assessAtRest && this.onGround && this.groundSpeed < 0.5 && !this.completed) {
       this.assessAtRest = false;
-      if (runwayContains(this.destination, this.x, this.y)) {
+      if (runwayAt(this.destination, this.x, this.y)) {
         this.completed = true;
         this.message = this.damageMessage("Arrived, but the aircraft is damaged");
       } else if (this.unflyable) {
@@ -318,14 +340,58 @@ export class Flight {
     }
   }
 
+  record(dt, wasAirborne) {
+    const travelled = this.groundSpeed * dt;
+    this.distance += travelled;
+    if (wasAirborne) {
+      this.airDistance += travelled;
+      if (this.stalled) this.stallTime += dt;
+      if (this.airspeed > this.aircraft.maxSpeed * 0.9) this.overspeedTime += dt;
+      this.maxBank = Math.max(this.maxBank, Math.abs(this.bank));
+    } else if (!this.hasFlown) {
+      this.takeoffOffset = Math.max(this.takeoffOffset,
+        Math.abs(runwayCoordinates(this.departure, this.x, this.y)[1]));
+    }
+    if (this.time >= this.nextSample) {
+      this.nextSample += 1;
+      this.track.push([this.x, this.y, this.z, this.time]);
+    }
+  }
+
+  recordLiftoff() {
+    const [along, across] = runwayCoordinates(this.departure, this.x, this.y);
+    this.takeoffStats = {
+      time: this.time,
+      speed: this.airspeed,
+      roll: along + this.departure.runwayLength * 0.4,
+      offset: Math.max(this.takeoffOffset, Math.abs(across)),
+      alignment: Math.abs((((this.heading - this.departure.runwayHeading + 180) % 360) + 360) % 360 - 180),
+      tailStrike: this.damageKinds.includes("tail"),
+    };
+  }
+
+  summary() {
+    return flightSummary(this);
+  }
+
   touchdown() {
     const craft = this.aircraft;
-    const runway = AIRPORTS.find((airport) => runwayContains(airport, this.x, this.y));
+    const runway = AIRPORTS.map((airport) => runwayAt(airport, this.x, this.y)).find(Boolean);
     const alignment = runway
       ? Math.abs((((this.heading - runway.runwayHeading + 90) % 180 + 180) % 180) - 90) : 180;
     const sink = -this.vz;
     const speed = this.airspeed;
     this.veer = this.bank >= 0 ? 1 : -1;
+    let along = 0;
+    let across = 0;
+    if (runway) {
+      [along, across] = runwayCoordinates(runway, this.x, this.y);
+      if (Math.abs((((this.heading - runway.runwayHeading + 180) % 360) + 360) % 360 - 180) > 90) along = -along;
+    }
+    this.landingStats = {
+      sink, speed, alignment, bank: Math.abs(this.bank), onRunway: Boolean(runway),
+      along: runway ? 0.5 + along / runway.runwayLength : 0, offset: Math.abs(across),
+    };
     let destroyed = null;
     if (sink > 8) destroyed = "Impact far too hard, the airframe broke up";
     else if (Math.abs(this.bank) > 45) destroyed = "A wing dug in and the aircraft cartwheeled";
@@ -351,11 +417,72 @@ export class Flight {
     } else if (this.damageKinds.length) {
       this.assessAtRest = true;
       this.message = this.damageMessage("WARNING, damage on landing");
-    } else if (runway === this.destination) {
+    } else if (runway && allRunways(this.destination).includes(runway)) {
       this.completed = true;
       this.message = "Successful arrival! Press R for another flight or Esc to choose a route.";
     } else {
       this.message = "Landed safely, but not at the destination. Take off to continue.";
     }
   }
+}
+
+const score = (value) => Math.round(clamp(value, 0, 100));
+
+function crossTrack(point, a, b) {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const t = clamp(((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / Math.max(dx * dx + dy * dy, 1), 0, 1);
+  return Math.hypot(point[0] - a[0] - t * dx, point[1] - a[1] - t * dy);
+}
+
+// Rate take-off, flight and landing out of 100; figures are game scores only.
+export function flightSummary(flight) {
+  const start = airportPosition(flight.departure);
+  const end = airportPosition(flight.destination);
+  const planned = Math.hypot(end[0] - start[0], end[1] - start[1]);
+  const track = [...flight.track, [flight.x, flight.y, flight.z, flight.time]];
+
+  let takeoff = 0;
+  const stats = flight.takeoffStats;
+  if (stats) {
+    takeoff = 100;
+    takeoff -= stats.tailStrike ? 25 : 0;
+    takeoff -= Math.min(35, Math.max(0, stats.offset - 6) * 2.5);
+    takeoff -= Math.min(25, Math.max(0, stats.roll / (flight.departure.runwayLength * 0.6) - 0.9) * 250);
+    takeoff -= Math.min(20, Math.max(0, flight.aircraft.landingSpeed * 0.8 - stats.speed) * 2);
+    takeoff -= Math.min(15, Math.max(0, stats.alignment - 2) * 1.5);
+  }
+
+  const airborne = track.filter((p) => p[2] > 1);
+  const samples = airborne.length ? airborne : track;
+  const cross = samples.reduce((sum, p) => sum + crossTrack(p, start, end), 0) / samples.length;
+  const ratio = flight.airDistance / Math.max(planned, 1);
+  let flying = 100;
+  flying -= Math.min(30, cross / Math.max(planned * 0.05, 1) * 30);
+  flying -= Math.min(20, Math.max(0, ratio - 1.05) * 50);
+  flying -= Math.min(25, flight.stallTime * 5);
+  flying -= Math.min(15, flight.overspeedTime * 3);
+  flying -= flight.maxBank > 50 ? 10 : 0;
+
+  let landing = 0;
+  const land = flight.landingStats;
+  if (land) {
+    landing = 100;
+    landing -= Math.min(40, Math.max(0, land.sink - 1.5) * 8);
+    landing -= Math.min(20, land.alignment * 1.5);
+    landing -= Math.min(15, Math.max(0, land.speed / flight.aircraft.landingSpeed - 1.1) * 60);
+    landing -= Math.min(15, Math.max(0, land.bank - 3) * 2);
+    landing -= Math.min(20, Math.max(0, land.offset - 5) * 1.5);
+    landing -= Math.min(15, Math.max(0, land.along - 0.6) * 50);
+    landing -= Math.min(40, 12 * flight.damageKinds.length);
+    if (!land.onRunway) landing = Math.min(landing, 20);
+  }
+
+  const scores = { takeoff: score(takeoff), flight: score(flying), landing: score(landing) };
+  scores.overall = score((scores.takeoff + scores.flight + scores.landing) / 3);
+  const liftoff = stats ? stats.time : flight.time;
+  return {
+    scores, time: flight.time, airborneTime: Math.max(0, flight.time - liftoff),
+    distance: flight.distance, plannedDistance: planned, track, planned: [start, end],
+  };
 }

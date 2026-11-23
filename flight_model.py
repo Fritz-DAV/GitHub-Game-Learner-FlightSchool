@@ -56,6 +56,11 @@ class Airport:
     runway_heading: float
     runway_length: float
     runway_width: float
+    extra_runways: tuple = ()
+
+    @property
+    def runways(self):
+        return (self, *self.extra_runways)
 
     @property
     def position(self):
@@ -74,16 +79,29 @@ class Airport:
             dx * math.cos(heading) - dy * math.sin(heading),
         )
 
-    def contains(self, x, y):
+    def _on_runway(self, x, y):
         along, across = self.runway_coordinates(x, y)
         return abs(along) <= self.runway_length / 2 and abs(across) <= self.runway_width / 2
+
+    def runway_at(self, x, y):
+        return next((r for r in self.runways if r._on_runway(x, y)), None)
+
+    def contains(self, x, y):
+        return self.runway_at(x, y) is not None
 
 
 # One representative runway per airport; dimensions and locations are rounded.
 AIRPORTS = (
-    Airport("Heathrow Airport, London", "EGLL", 51.4775, -0.4614, 90, 3902, 50),
-    Airport("Charles De Gaulle Airport, Paris", "LFPG", 49.0097, 2.5479, 90, 4200, 60),
+    Airport("Heathrow Airport, London", "EGLL", 51.4775, -0.4614, 90, 3902, 50, (
+        Airport("Heathrow 09R/27L", "EGLL", 51.4649, -0.4590, 90, 3660, 50),
+    )),
+    Airport("Charles De Gaulle Airport, Paris", "LFPG", 49.0097, 2.5479, 90, 4200, 60, (
+        Airport("Paris CDG north 2", "LFPG", 49.0160, 2.5560, 90, 2700, 60),
+        Airport("Paris CDG south 1", "LFPG", 48.9957, 2.5822, 85, 4215, 45),
+        Airport("Paris CDG south 2", "LFPG", 48.9893, 2.5750, 85, 2700, 60),
+    )),
     Airport("Stansted Airport, United Kingdom", "EGSS", 51.8850, 0.2350, 40, 3049, 46),
+    Airport("Edinburgh Airport, Edinburgh", "EGPH", 55.9500, -3.3725, 60, 2556, 46),
 )
 
 
@@ -156,6 +174,11 @@ class Flight:
         self.unflyable = False
         self.veer = 1
         self.assess_at_rest = False
+        self.track = [(self.x, self.y, 0.0, 0.0)]
+        self._next_sample = 1.0
+        self.distance = self.air_distance = 0.0
+        self.stall_time = self.overspeed_time = self.max_bank = self.takeoff_offset = 0.0
+        self.takeoff_stats = self.landing_stats = None
         self.message = "Ready: add throttle, build speed, then gently raise the nose."
 
     @property
@@ -323,7 +346,10 @@ class Flight:
         self.x += self.vx * dt
         self.y += self.vy * dt
         self.z += self.vz * dt
+        self._record(dt, was_airborne)
         if self.z > 0.1 and self.on_ground:
+            if not self.has_flown:
+                self._record_liftoff()
             self.on_ground = False
             self.has_flown = True
             self.message = "Airborne! Follow the destination bearing; keep an eye on airspeed."
@@ -347,13 +373,53 @@ class Flight:
             else:
                 self.message = self._damage_message("Stopped with damage, take-off is still possible")
 
+    def _record(self, dt, was_airborne):
+        travelled = self.ground_speed * dt
+        self.distance += travelled
+        if was_airborne:
+            self.air_distance += travelled
+            self.stall_time += dt * self.stalled
+            self.overspeed_time += dt * (self.airspeed > self.aircraft.max_speed * 0.9)
+            self.max_bank = max(self.max_bank, abs(self.bank))
+        elif not self.has_flown:
+            self.takeoff_offset = max(
+                self.takeoff_offset, abs(self.departure.runway_coordinates(self.x, self.y)[1]))
+        if self.time >= self._next_sample:
+            self._next_sample += 1.0
+            self.track.append((self.x, self.y, self.z, self.time))
+
+    def _record_liftoff(self):
+        along, across = self.departure.runway_coordinates(self.x, self.y)
+        self.takeoff_stats = {
+            "time": self.time, "speed": self.airspeed,
+            "roll": along + self.departure.runway_length * 0.4,
+            "offset": max(self.takeoff_offset, abs(across)),
+            "alignment": abs((self.heading - self.departure.runway_heading + 180) % 360 - 180),
+            "tail_strike": "tail" in self.damage_kinds,
+        }
+
+    def summary(self):
+        """Scores out of 100 plus time, distance and path data for the flight so far."""
+        return flight_summary(self)
+
     def _touchdown(self):
         craft = self.aircraft
-        runway = next((airport for airport in AIRPORTS if airport.contains(self.x, self.y)), None)
+        runway = next(filter(None, (a.runway_at(self.x, self.y) for a in AIRPORTS)), None)
         alignment = 180 if runway is None else abs(
             (self.heading - runway.runway_heading + 90) % 180 - 90)
         sink, speed = -self.vz, self.airspeed
         self.veer = 1 if self.bank >= 0 else -1
+        along = across = 0.0
+        if runway is not None:
+            along, across = runway.runway_coordinates(self.x, self.y)
+            if abs((self.heading - runway.runway_heading + 180) % 360 - 180) > 90:
+                along = -along
+        self.landing_stats = {
+            "sink": sink, "speed": speed, "alignment": alignment, "bank": abs(self.bank),
+            "on_runway": runway is not None,
+            "along": 0.5 + along / runway.runway_length if runway else 0.0,
+            "offset": abs(across),
+        }
         destroyed = None
         if sink > 8:
             destroyed = "Impact far too hard, the airframe broke up"
@@ -388,8 +454,71 @@ class Flight:
         elif self.damage_kinds:
             self.assess_at_rest = True
             self.message = self._damage_message("WARNING, damage on landing")
-        elif runway == self.destination:
+        elif runway in self.destination.runways:
             self.completed = True
             self.message = "Successful arrival! Press R for another flight or Esc to choose a route."
         else:
             self.message = "Landed safely, but not at the destination. Take off to continue."
+
+
+def _score(value):
+    return int(round(clamp(value, 0, 100)))
+
+
+def _cross_track(point, a, b):
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    t = clamp(((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / max(dx * dx + dy * dy, 1), 0, 1)
+    return math.hypot(point[0] - a[0] - t * dx, point[1] - a[1] - t * dy)
+
+
+def flight_summary(flight):
+    """Rate take-off, flight and landing out of 100; figures are game scores only."""
+    start, end = flight.departure.position, flight.destination.position
+    planned = math.dist(start, end)
+    track = list(flight.track) + [(flight.x, flight.y, flight.z, flight.time)]
+
+    takeoff = 100.0
+    stats = flight.takeoff_stats
+    if stats:
+        usable = flight.departure.runway_length * 0.6
+        takeoff -= 25 * stats["tail_strike"]
+        takeoff -= min(35, max(0, stats["offset"] - 6) * 2.5)
+        takeoff -= min(25, max(0, stats["roll"] / usable - 0.9) * 250)
+        takeoff -= min(20, max(0, flight.aircraft.landing_speed * 0.8 - stats["speed"]) * 2)
+        takeoff -= min(15, max(0, stats["alignment"] - 2) * 1.5)
+    else:
+        takeoff = 0
+
+    airborne = [p for p in track if p[2] > 1] or track
+    cross = sum(_cross_track(p, start, end) for p in airborne) / len(airborne)
+    ratio = flight.air_distance / max(planned, 1)
+    flying = 100.0
+    flying -= min(30, cross / max(planned * 0.05, 1) * 30)
+    flying -= min(20, max(0, ratio - 1.05) * 50)
+    flying -= min(25, flight.stall_time * 5)
+    flying -= min(15, flight.overspeed_time * 3)
+    flying -= 10 * (flight.max_bank > 50)
+
+    landing = 0.0
+    land = flight.landing_stats
+    if land:
+        landing = 100.0
+        craft = flight.aircraft
+        landing -= min(40, max(0, land["sink"] - 1.5) * 8)
+        landing -= min(20, land["alignment"] * 1.5)
+        landing -= min(15, max(0, land["speed"] / craft.landing_speed - 1.1) * 60)
+        landing -= min(15, max(0, land["bank"] - 3) * 2)
+        landing -= min(20, max(0, land["offset"] - 5) * 1.5)
+        landing -= min(15, max(0, land["along"] - 0.6) * 50)
+        landing -= min(40, 12 * len(flight.damage_kinds))
+        if not land["on_runway"]:
+            landing = min(landing, 20)
+
+    scores = {"takeoff": _score(takeoff), "flight": _score(flying), "landing": _score(landing)}
+    scores["overall"] = _score(sum(scores.values()) / 3)
+    liftoff = stats["time"] if stats else flight.time
+    return {
+        "scores": scores, "time": flight.time, "airborne_time": max(0.0, flight.time - liftoff),
+        "distance": flight.distance, "planned_distance": planned,
+        "track": track, "planned": (start, end),
+    }

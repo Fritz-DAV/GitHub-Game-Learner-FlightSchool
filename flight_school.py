@@ -7,6 +7,7 @@ from tkinter import ttk
 
 from flight_model import AIRCRAFT, AIRPORTS, Flight, clamp, clamp_look, next_time_scale
 from aircraft_visuals import aircraft_surfaces
+from summary_view import draw_summary
 from scenery import LAND_SURFACES, clip_polygon, heathrow_scenery, regional_scenery, terrain
 
 
@@ -19,6 +20,8 @@ class FlightSchool:
     look_yaw = look_pitch = 0.0
     time_scale = 1
     drag = None
+    summary = None
+    summary_visible = True
 
     def __init__(self, root):
         self.root = root
@@ -104,6 +107,7 @@ class FlightSchool:
         self.keys.clear()
         self.mouse = (0, 0)
         self.paused = False
+        self.summary, self.summary_visible = None, True
         self._reset_view()
         self.menu.pack_forget()
         self.menu_message.config(text="")
@@ -136,6 +140,8 @@ class FlightSchool:
             self.flight.lights_on = not self.flight.lights_on
         elif key == "r":
             self.start()
+        elif key == "return":
+            self.summary_visible = not self.summary_visible
         elif key == "escape":
             self.show_menu()
 
@@ -327,6 +333,14 @@ class FlightSchool:
                 y + along * math.cos(heading) - across * math.sin(heading), height)
 
     def _runway(self, airport):
+        for runway in airport.runways:
+            self._runway_surface(runway)
+        label = self._camera_point((*airport.position, 35))
+        if label[2] > 1:
+            self.canvas.create_text(*self._project(label), text=airport.code,
+                                    fill="#ffffff", font=("", 13, "bold"))
+
+    def _runway_surface(self, airport):
         length, width = airport.runway_length / 2, airport.runway_width / 2
         self._polygon([self._runway_point(airport, a, b) for a, b in (
             (-length, -width - 10), (length, -width - 10),
@@ -347,10 +361,6 @@ class FlightSchool:
                 self._polygon([self._runway_point(airport, a, b) for a, b in (
                     (start, center - 1), (stop, center - 1),
                     (stop, center + 1), (start, center + 1))], "white")
-        label = self._camera_point((*airport.position, 35))
-        if label[2] > 1:
-            self.canvas.create_text(*self._project(label), text=airport.code,
-                                    fill="#ffffff", font=("", 13, "bold"))
 
     def _plane(self):
         f = self.flight
@@ -365,7 +375,7 @@ class FlightSchool:
                     f.y - across * math.sin(heading) + along * math.cos(heading),
                     f.z + f.aircraft.datum + up)
 
-        surfaces = aircraft_surfaces(f.aircraft, f.gear, f.time, f.engine_power)
+        surfaces = aircraft_surfaces(f.aircraft, f.gear, f.time, f.engine_power, f.damage_kinds)
         transformed = [([world(point) for point in points], color) for points, color in surfaces]
         return transformed
 
@@ -425,6 +435,9 @@ class FlightSchool:
             self._cockpit()
         self._hud()
         self._map()
+        if f.completed and self.summary_visible:
+            self.summary = self.summary or f.summary()
+            draw_summary(c, self.width, self.height, f, self.summary)
 
     def _cockpit(self):
         c, f, w, h = self.canvas, self.flight, self.width, self.height

@@ -138,7 +138,26 @@ function aircraftHull(aircraft) {
   return surfaces;
 }
 
-export function aircraftSurfaces(aircraft, gear, time = 0, enginePower = 0) {
+// A sheared strut stub with its wheel lying flat on the ground beside it.
+function brokenLeg(x, y, ground, radius, cessna) {
+  const side = x >= 0 ? 1 : -1;
+  const reach = cessna ? 0.6 : 1.6;
+  const wx = x + side * reach;
+  const wy = y + radius * 1.6;
+  const disc = [0, 0.25 * radius].map((lift) => Array.from({ length: 10 }, (_, i) => [
+    wx + radius * Math.cos(i * Math.PI * 2 / 10), wy + radius * Math.sin(i * Math.PI * 2 / 10),
+    ground + 0.06 + lift,
+  ]));
+  return [
+    [[[x - 0.06, y, -0.5], [x + 0.06, y, -0.5],
+      [x + side * 0.4 + 0.06, y, -0.95], [x + side * 0.4 - 0.06, y, -0.95]], "#bbc5ca"],
+    ...disc.map((ring) => [ring, "#20272c"]),
+    ...Array.from({ length: 10 }, (_, i) => [[disc[0][i], disc[0][(i + 1) % 10],
+      disc[1][(i + 1) % 10], disc[1][i]], "#30373b"]),
+  ];
+}
+
+export function aircraftSurfaces(aircraft, gear, time = 0, enginePower = 0, damage = []) {
   const surfaces = [...aircraftHull(aircraft)];
   const cessna = aircraft === AIRCRAFT[0];
   const datum = aircraft.datum;
@@ -156,20 +175,29 @@ export function aircraftSurfaces(aircraft, gear, time = 0, enginePower = 0) {
   const positions = aircraft.supersonic ? [[-5.9, -6], [5.9, -6], [0, 19]]
     : [[cessna ? -1.2 : -2.7, cessna ? -1.1 : -2.5],
       [cessna ? 1.2 : 2.7, cessna ? -1.1 : -2.5], [0, cessna ? 2.5 : 12]];
-  for (const [x, y] of positions) {
-    const wheelZ = -0.65 + (-datum + radius + 0.65) * gear;
+  const mainBroken = damage.includes("gear") || damage.includes("terrain");
+  const flat = damage.includes("tyres");
+  for (const [index, [x, y]] of positions.entries()) {
+    if ((mainBroken && index < 2) || (damage.includes("nose_gear") && index === 2)) {
+      surfaces.push(...brokenLeg(x, y, -datum, radius, cessna));
+      continue;
+    }
+    const tyre = radius * (flat ? 0.55 : 1);
+    const wheelZ = -0.65 + (-datum + tyre + 0.65) * gear;
     const wheelX = x * gear;
     surfaces.push([[[wheelX - 0.06, y, -0.5], [wheelX + 0.06, y, -0.5],
       [wheelX + 0.06, y, wheelZ], [wheelX - 0.06, y, wheelZ]], "#bbc5ca"]);
     for (const offset of cessna ? [0] : [-0.28, 0.28]) {
+      // Burst tyres sag and spread, with a dark red scorched sidewall.
+      const halfWidth = radius * (flat ? 0.55 : 0.35);
       const rings = [-1, 1].map((side) => Array.from({ length: 10 }, (_, i) => [
-        wheelX + offset + side * radius * 0.35,
-        y + radius * Math.cos(i * Math.PI * 2 / 10), wheelZ + radius * Math.sin(i * Math.PI * 2 / 10),
+        wheelX + offset + side * halfWidth,
+        y + tyre * Math.cos(i * Math.PI * 2 / 10), wheelZ + tyre * Math.sin(i * Math.PI * 2 / 10),
       ]));
       surfaces.push(...rings.map((ring) => [ring, "#20272c"]));
       for (let i = 0; i < 10; i += 1) {
         surfaces.push([[rings[0][i], rings[0][(i + 1) % 10],
-          rings[1][(i + 1) % 10], rings[1][i]], "#30373b"]);
+          rings[1][(i + 1) % 10], rings[1][i]], flat ? "#7a2f2f" : "#30373b"]);
       }
     }
   }

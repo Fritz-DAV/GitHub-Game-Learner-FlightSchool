@@ -28,3 +28,22 @@ class AircraftVisualTests(unittest.TestCase):
                                           if color == "#20272c" for p in points)
                 self.assertGreater(lowest(transit), lowest(down))
                 self.assertFalse(any(color == "#20272c" for _, color in up))
+
+    def test_damaged_landing_gear_shows_on_the_model(self):
+        wheel = "#20272c"
+        for aircraft in AIRCRAFT:
+            healthy = aircraft_surfaces(aircraft, 1)
+            wheels = lambda mesh: [p for pts, color in mesh if color == wheel for p in pts]
+            flat = aircraft_surfaces(aircraft, 1, damage=("tyres",))
+            self.assertGreater(min(p[2] for p in wheels(flat)), -aircraft.datum - 0.01)
+            self.assertLess(max(p[2] for p in wheels(flat)), max(p[2] for p in wheels(healthy)))
+            self.assertTrue(any(color == "#7a2f2f" for _, color in flat))
+            for kind in ("gear", "nose_gear"):
+                broken = aircraft_surfaces(aircraft, 1, damage=(kind,))
+                self.assertNotEqual(broken, healthy)
+                # Detached wheels lie flat on the ground instead of hanging on struts.
+                lying = [p for p in wheels(broken) if p[2] < -aircraft.datum + 0.5]
+                self.assertTrue(lying)
+                self.assertFalse(any(p[2] > -aircraft.datum + 0.5 for p in wheels(broken)
+                                     if abs(p[0]) > 2 and kind == "gear"))
+

@@ -1,5 +1,5 @@
 import {
-  AIRCRAFT, AIRPORTS, Flight, airportPosition, clamp, clampLook, nextTimeScale,
+  AIRCRAFT, AIRPORTS, Flight, allRunways, airportPosition, clamp, clampLook, nextTimeScale,
 } from "./flight-model.mjs";
 import {
   CITY_OUTLINES, COASTS, LAND_SURFACES, ROADS, THAMES, clipPolygon, coarseTerrain, geographic,
@@ -7,6 +7,7 @@ import {
 } from "./scenery.mjs";
 import { cloudCover, cloudDrift, cloudSurfaces } from "./clouds.mjs";
 import { aircraftSurfaces } from "./aircraft-visuals.mjs";
+import { drawAltitudeChart, drawSummaryMap, formatDistance, formatDuration } from "./summary.mjs";
 
 const london = heathrowScenery();
 const region = regionalScenery();
@@ -23,8 +24,9 @@ const keys = new Set();
 const mouse = { x: 0, y: 0 };
 const state = {
   flight: null, external: false, paused: false, mouseEnabled: false,
-  lookYaw: 0, lookPitch: 0, timeScale: 1, trail: [],
+  lookYaw: 0, lookPitch: 0, timeScale: 1, trail: [], summaryShown: false,
 };
+const summaryPanel = $("#summary");
 const LOOK_SENSITIVITY = 0.25; // degrees of look-around per dragged pixel
 const CLICK_SLOP = 4; // pixels of movement before a press becomes a drag
 let drag = null;
@@ -85,6 +87,7 @@ function startFlight() {
   state.external = false;
   state.paused = false;
   state.trail = [];
+  hideSummary();
   resetView();
   setTimeScale(1);
   drag = null;
@@ -102,7 +105,41 @@ function startFlight() {
   return true;
 }
 
+function hideSummary() {
+  state.summaryShown = false;
+  summaryPanel.hidden = true;
+}
+
+function sizeCanvas(canvas) {
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = Math.round(rect.width * dpr);
+  canvas.height = Math.round(rect.height * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return [ctx, rect.width, rect.height];
+}
+
+function showSummary(flight) {
+  const summary = flight.summary();
+  state.summaryShown = true;
+  summaryPanel.hidden = false;
+  $("#summary-route").textContent = `${flight.aircraft.name} · ${flight.departure.name} → ${flight.destination.name}`;
+  for (const key of ["takeoff", "flight", "landing", "overall"]) $(`#score-${key}`).textContent = summary.scores[key];
+  $("#stat-time").textContent = formatDuration(summary.time);
+  $("#stat-airborne").textContent = formatDuration(summary.airborneTime);
+  $("#stat-distance").textContent = formatDistance(summary.distance);
+  $("#stat-planned").textContent = formatDistance(summary.plannedDistance);
+  drawSummaryMap(...sizeCanvas($("#summary-map")), summary, flight);
+  drawAltitudeChart(...sizeCanvas($("#summary-altitude")), summary);
+}
+
+$("#summary-again").addEventListener("click", () => startFlight());
+$("#summary-menu").addEventListener("click", () => showMenu());
+$("#summary-close").addEventListener("click", () => { summaryPanel.hidden = true; });
+
 function showMenu() {
+  hideSummary();
   state.flight = null;
   state.paused = false;
   resetView();
@@ -347,6 +384,17 @@ function runwayPoint(airport, along, across, z = 0.05) {
   ];
 }
 function runway(airport) {
+  for (const surface of allRunways(airport)) runwaySurface(surface);
+  const label = cameraPoint([...airportPosition(airport), 35]);
+  if (label[2] > 1) {
+    const [x, y] = project(label);
+    context.fillStyle = "#fff";
+    context.font = "bold 13px system-ui";
+    context.textAlign = "center";
+    context.fillText(airport.code, x, y);
+  }
+}
+function runwaySurface(airport) {
   const length = airport.runwayLength / 2;
   const widthAt = airport.runwayWidth / 2;
   polygon([
@@ -377,14 +425,6 @@ function runway(airport) {
       ], "#fff");
     }
   }
-  const label = cameraPoint([...airportPosition(airport), 35]);
-  if (label[2] > 1) {
-    const [x, y] = project(label);
-    context.fillStyle = "#fff";
-    context.font = "bold 13px system-ui";
-    context.textAlign = "center";
-    context.fillText(airport.code, x, y);
-  }
 }
 function drawPlane(flight) {
   const heading = flight.heading * Math.PI / 180;
@@ -408,7 +448,7 @@ function drawPlane(flight) {
       flight.z + flight.aircraft.datum + up,
     ];
   };
-  return aircraftSurfaces(flight.aircraft, flight.gear, flight.time, flight.enginePower)
+  return aircraftSurfaces(flight.aircraft, flight.gear, flight.time, flight.enginePower, flight.damageKinds)
     .map(([points, color]) => [points.map(world), color]);
 }
 
@@ -796,6 +836,7 @@ function frame(now) {
       state.trail.push([flight.x, flight.y]);
       if (state.trail.length > 500) state.trail.shift();
     }
+    if (flight.completed && !state.summaryShown) showSummary(flight);
     drawScene(flight);
     drawMap(flight);
     formatTelemetry(flight);
