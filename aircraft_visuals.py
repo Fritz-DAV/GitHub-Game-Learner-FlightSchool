@@ -15,8 +15,73 @@ def tube(stations, x=0, z=0, flatten=1):
             for a, b in zip(rings, rings[1:]) for i in range(12)]
 
 
-@lru_cache(maxsize=3)
+CONCORDE_LENGTH, CONCORDE_SPAN = 61.7, 25.6
+NOSE_HINGE = (24.85, 0.0)
+
+
+def _disc(x, y, z, radius, sides=12):
+    return [(x + radius * math.cos(i * math.tau / sides), y,
+             z + radius * math.sin(i * math.tau / sides)) for i in range(sides)]
+
+
+@lru_cache(maxsize=1)
+def _concorde_hull():
+    """Slender needle-nosed fuselage, ogival delta wing, four underwing
+    Olympus engines in pairs and a tall fin with no horizontal tail."""
+    half, blue = CONCORDE_LENGTH / 2, "#1d3f7a"
+    surfaces = tube([(-half, 0.25), (-half + 5, 0.85), (-16, 1.3), (0, 1.4),
+                     (14, 1.3), (NOSE_HINGE[0], 1.05)])
+    # Ogival leading edge (across, along) and straight trailing edge.
+    leading = [(1.2, 12), (2.6, 5), (4.6, -3), (7.6, -10), (10.5, -14.5),
+               (CONCORDE_SPAN / 2, -17)]
+    trailing = [(x, -30.5 + (x - 1.2) * 7.5 / (CONCORDE_SPAN / 2 - 1.2))
+                for x, _ in leading]
+    wing_z = -0.6
+    for side in (-1, 1):
+        for (lx, ly), (nx, ny), (tx, ty), (ux, uy) in zip(
+                leading, leading[1:], trailing, trailing[1:]):
+            surfaces.append(([(side * lx, ly, wing_z), (side * nx, ny, wing_z),
+                              (side * ux, uy, wing_z), (side * tx, ty, wing_z)],
+                             "#e4eaee"))
+        for x in (3.2, 4.6):
+            surfaces.extend(tube([(-24, 0.5), (-21, 0.62), (3, 0.62), (3.3, 0.55)],
+                                 side * x, -1.35))
+            surfaces.append((_disc(side * x, 3.32, -1.35, 0.5), "#24333c"))
+        for i in range(36):
+            along = 21 - i * 1.15
+            x = side * 1.38
+            surfaces.append(([(x, along, 0.35), (x, along + 0.4, 0.35),
+                              (x, along + 0.4, 0.7), (x, along, 0.7)], "#284e64"))
+        surfaces.append(([(side * 0.75, 24.6, 0.75), (side * 0.2, 25.5, 0.85),
+                          (side * 0.2, 25.5, 0.55), (side * 0.75, 24.6, 0.45)], "#25485c"))
+    fin = [(-14, 1.1), (-25, 7.4), (-29, 7.4), (-30.8, 0.9)]
+    for side in (-1, 1):
+        surfaces.append(([(side * 0.12, y, z) for y, z in fin], blue))
+    for (ay, az), (by, bz) in zip(fin, fin[1:]):
+        surfaces.append(([(-0.12, ay, az), (0.12, ay, az),
+                          (0.12, by, bz), (-0.12, by, bz)], blue))
+    return tuple(surfaces)
+
+
+def _concorde_nose(gear):
+    """Needle nose that droops 5 degrees with the gear down for visibility."""
+    droop = math.radians(5) * gear
+    hinge_y, hinge_z = NOSE_HINGE
+    cone = tube([(hinge_y, 1.05), (28, 0.6), (CONCORDE_LENGTH / 2, 0.06)])
+    cos, sin = math.cos(droop), math.sin(droop)
+
+    def drop(point):
+        x, y, z = point
+        dy, dz = y - hinge_y, z - hinge_z
+        return (x, hinge_y + dy * cos + dz * sin, hinge_z - dy * sin + dz * cos)
+
+    return [([drop(p) for p in points], color) for points, color in cone]
+
+
+@lru_cache(maxsize=4)
 def aircraft_hull(aircraft):
+    if aircraft.supersonic:
+        return _concorde_hull()
     cessna = aircraft == AIRCRAFT[0]
     boeing = aircraft == AIRCRAFT[1]
     length = 8.3 if cessna else 39.5 if boeing else 37.6
@@ -76,7 +141,9 @@ def aircraft_hull(aircraft):
 def aircraft_surfaces(aircraft, gear, time=0, engine_power=0):
     surfaces = list(aircraft_hull(aircraft))
     cessna = aircraft == AIRCRAFT[0]
-    datum = 1.5 if cessna else 3.3
+    datum = aircraft.datum
+    if aircraft.supersonic:
+        surfaces.extend(_concorde_nose(gear))
     if cessna:
         angle = time * (8 + engine_power * 90)
         dx, dz = 1.05 * math.cos(angle), 1.05 * math.sin(angle)
@@ -86,10 +153,14 @@ def aircraft_surfaces(aircraft, gear, time=0, engine_power=0):
         gear = 1
     if gear <= 0.01:
         return surfaces
-    wheel_radius = 0.28 if cessna else 0.55
-    for x, y in ((-1.2 if cessna else -2.7, -1.1 if cessna else -2.5),
-                 (1.2 if cessna else 2.7, -1.1 if cessna else -2.5),
-                 (0, 2.5 if cessna else 12)):
+    wheel_radius = 0.28 if cessna else 0.6 if aircraft.supersonic else 0.55
+    if aircraft.supersonic:
+        positions = ((-5.9, -6), (5.9, -6), (0, 19))
+    else:
+        positions = ((-1.2 if cessna else -2.7, -1.1 if cessna else -2.5),
+                     (1.2 if cessna else 2.7, -1.1 if cessna else -2.5),
+                     (0, 2.5 if cessna else 12))
+    for x, y in positions:
         wheel_z = -0.65 + (-datum + wheel_radius + 0.65) * gear
         wheel_x = x * gear
         surfaces.append(([(wheel_x - 0.06, y, -0.5), (wheel_x + 0.06, y, -0.5),

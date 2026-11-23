@@ -11,9 +11,77 @@ function tube(stations, x = 0, z = 0, flatten = 1) {
   ]));
 }
 
+const CONCORDE_LENGTH = 61.7;
+const CONCORDE_SPAN = 25.6;
+const NOSE_HINGE = [24.85, 0];
+
+const disc = (x, y, z, radius, sides = 12) => Array.from({ length: sides }, (_, i) => [
+  x + radius * Math.cos(i * Math.PI * 2 / sides), y, z + radius * Math.sin(i * Math.PI * 2 / sides),
+]);
+
+// Slender needle-nosed fuselage, ogival delta wing, four underwing Olympus
+// engines in pairs and a tall fin with no horizontal tail.
+function concordeHull() {
+  const half = CONCORDE_LENGTH / 2;
+  const blue = "#1d3f7a";
+  const surfaces = tube([[-half, 0.25], [-half + 5, 0.85], [-16, 1.3], [0, 1.4],
+    [14, 1.3], [NOSE_HINGE[0], 1.05]]);
+  const leading = [[1.2, 12], [2.6, 5], [4.6, -3], [7.6, -10], [10.5, -14.5], [CONCORDE_SPAN / 2, -17]];
+  const trailing = leading.map(([x]) => [x, -30.5 + (x - 1.2) * 7.5 / (CONCORDE_SPAN / 2 - 1.2)]);
+  const wingZ = -0.6;
+  for (const side of [-1, 1]) {
+    leading.slice(1).forEach(([nx, ny], i) => {
+      const [lx, ly] = leading[i];
+      const [tx, ty] = trailing[i];
+      const [ux, uy] = trailing[i + 1];
+      surfaces.push([[[side * lx, ly, wingZ], [side * nx, ny, wingZ],
+        [side * ux, uy, wingZ], [side * tx, ty, wingZ]], "#e4eaee"]);
+    });
+    for (const x of [3.2, 4.6]) {
+      surfaces.push(...tube([[-24, 0.5], [-21, 0.62], [3, 0.62], [3.3, 0.55]], side * x, -1.35));
+      surfaces.push([disc(side * x, 3.32, -1.35, 0.5), "#24333c"]);
+    }
+    for (let i = 0; i < 36; i += 1) {
+      const along = 21 - i * 1.15;
+      const x = side * 1.38;
+      surfaces.push([[[x, along, 0.35], [x, along + 0.4, 0.35],
+        [x, along + 0.4, 0.7], [x, along, 0.7]], "#284e64"]);
+    }
+    surfaces.push([[[side * 0.75, 24.6, 0.75], [side * 0.2, 25.5, 0.85],
+      [side * 0.2, 25.5, 0.55], [side * 0.75, 24.6, 0.45]], "#25485c"]);
+  }
+  const fin = [[-14, 1.1], [-25, 7.4], [-29, 7.4], [-30.8, 0.9]];
+  for (const side of [-1, 1]) surfaces.push([fin.map(([y, z]) => [side * 0.12, y, z]), blue]);
+  fin.slice(1).forEach(([by, bz], i) => {
+    const [ay, az] = fin[i];
+    surfaces.push([[[-0.12, ay, az], [0.12, ay, az], [0.12, by, bz], [-0.12, by, bz]], blue]);
+  });
+  return surfaces;
+}
+
+// Needle nose that droops 5 degrees with the gear down for visibility.
+function concordeNose(gear) {
+  const droop = 5 * Math.PI / 180 * gear;
+  const [hingeY, hingeZ] = NOSE_HINGE;
+  const cos = Math.cos(droop);
+  const sin = Math.sin(droop);
+  const drop = ([x, y, z]) => {
+    const dy = y - hingeY;
+    const dz = z - hingeZ;
+    return [x, hingeY + dy * cos + dz * sin, hingeZ - dy * sin + dz * cos];
+  };
+  return tube([[hingeY, 1.05], [28, 0.6], [CONCORDE_LENGTH / 2, 0.06]])
+    .map(([points, color]) => [points.map(drop), color]);
+}
+
 const hullCache = new Map();
 function aircraftHull(aircraft) {
   if (hullCache.has(aircraft)) return hullCache.get(aircraft);
+  if (aircraft.supersonic) {
+    const concorde = concordeHull();
+    hullCache.set(aircraft, concorde);
+    return concorde;
+  }
   const cessna = aircraft === AIRCRAFT[0];
   const boeing = aircraft === AIRCRAFT[1];
   const length = cessna ? 8.3 : boeing ? 39.5 : 37.6;
@@ -73,7 +141,8 @@ function aircraftHull(aircraft) {
 export function aircraftSurfaces(aircraft, gear, time = 0, enginePower = 0) {
   const surfaces = [...aircraftHull(aircraft)];
   const cessna = aircraft === AIRCRAFT[0];
-  const datum = cessna ? 1.5 : 3.3;
+  const datum = aircraft.datum;
+  if (aircraft.supersonic) surfaces.push(...concordeNose(gear));
   if (cessna) {
     const angle = time * (8 + enginePower * 90);
     const dx = 1.05 * Math.cos(angle);
@@ -83,9 +152,11 @@ export function aircraftSurfaces(aircraft, gear, time = 0, enginePower = 0) {
     gear = 1;
   }
   if (gear <= 0.01) return surfaces;
-  const radius = cessna ? 0.28 : 0.55;
-  for (const [x, y] of [[cessna ? -1.2 : -2.7, cessna ? -1.1 : -2.5],
-    [cessna ? 1.2 : 2.7, cessna ? -1.1 : -2.5], [0, cessna ? 2.5 : 12]]) {
+  const radius = cessna ? 0.28 : aircraft.supersonic ? 0.6 : 0.55;
+  const positions = aircraft.supersonic ? [[-5.9, -6], [5.9, -6], [0, 19]]
+    : [[cessna ? -1.2 : -2.7, cessna ? -1.1 : -2.5],
+      [cessna ? 1.2 : 2.7, cessna ? -1.1 : -2.5], [0, cessna ? 2.5 : 12]];
+  for (const [x, y] of positions) {
     const wheelZ = -0.65 + (-datum + radius + 0.65) * gear;
     const wheelX = x * gear;
     surfaces.push([[[wheelX - 0.06, y, -0.5], [wheelX + 0.06, y, -0.5],

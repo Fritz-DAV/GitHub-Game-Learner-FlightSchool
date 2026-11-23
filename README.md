@@ -1,7 +1,7 @@
 # GitHub-Game-Learner-FlightSchool
 
 A playable Python starter for learning to build a flying game with GitHub Copilot.
-Fly a **Cessna 172 Skyhawk**, **Boeing 737-800**, or **Airbus A320** between
+Fly a **Cessna 172 Skyhawk**, **Boeing 737-800**, **Airbus A320**, or supersonic **Concorde** between
 **Heathrow (EGLL)**, **Charles De Gaulle (LFPG)**, and **Stansted (EGSS)**.
 Each airport has a runway, with edge, centreline and threshold markings.
 Choose different departure and destination airports before each flight.
@@ -16,6 +16,13 @@ not around flat London/Essex. Heathrow also has simplified terminal
 buildings, aprons, taxiways and a control tower. Follow the approximate River
 Thames east toward central London (about 25 km) to find bridges, the London Eye
 and a Westminster-style tower.
+
+The browser edition also has 3D shaded cumulus and a broken high cloud layer that
+drift with the wind, plus a haze band that keeps land and sea continuous out to the
+horizon at any altitude. Cities and towns follow hand-simplified built-up outlines
+(London along the Thames, compact Paris, road- and coast-aligned towns) rather than
+circles. The top-right map shows coastlines, the Thames, motorways, city areas, cloud
+cover, your track and heading, and the distance to the destination runway.
 
 Aircraft have metre-scale fuselages, cockpit/cabin glazing, wings, tails and
 visible wheels. The Cessna has a high wing, struts, propeller and fixed gear;
@@ -41,7 +48,7 @@ a working learning game:
 | Runway drawing, cockpit frame/instruments and an external plane drawing | Provide both requested viewpoints and visual landing cues | See ahead from inside the plane or watch it from behind; both views control the same aircraft |
 | Keyboard controls, optional mouse steering and mouse-wheel throttle | Support both requested input devices | Fly with the keyboard alone or combine it with the mouse |
 | Flight readings, destination bearing and route map | Help a beginner understand position and flight condition | Read airspeed, height, heading, power and climb/descent rate while navigating |
-| Pause, automatic pause on lost focus, restart and menu return | Make practice easier to interrupt and repeat | Switch away safely, retry a flight or choose another route without closing the game |
+| Pause, background running, fast-forward, restart and menu return | Make practice easier to interrupt and repeat | Click another window without freezing the flight, retry a flight or choose another route without closing the game |
 | `tests/test_flight_model.py` and `tests/test_flight_school.py` | Check flight rules and the window separately | Run repeatable checks; window checks skip when a desktop or Tkinter is unavailable |
 | `.gitignore` entries for Python caches and a local virtual environment | Keep generated files out of commits | Your changes stay focused on source code rather than temporary Python files |
 | This expanded README | Explain setup, controls, limitations and small Copilot-guided lessons | You have a starting guide and can understand what to change next and why |
@@ -83,7 +90,7 @@ account, or internet connection are required.
 The browser game supports the same aircraft, airports, wind choices, flight
 model, cockpit and external views, route map, keyboard controls and mouse
 steering as the desktop version. On touch screens, use the on-screen flight
-buttons. The game pauses when its browser tab loses focus.
+buttons. The game keeps running if the browser window loses focus, but pauses if the tab is hidden.
 
 ## Controls
 
@@ -103,13 +110,20 @@ Click **Start flight** after choosing a plane, route and wind.
 | `M` | Toggle mouse steering: above centre raises the nose, left/right banks |
 | `V` | Switch cockpit / external chase view |
 | `1` / `2` | Choose cockpit / external view directly |
+| Drag with the mouse | Look around (360° sideways, up/down to 80°) in cockpit or external view; the view stays put when you let go |
+| `C` | Centre the view (also reset when you switch view or restart) |
+| `F` | Fast-forward: 2x, then 4x, then 8x, then back to normal speed |
 | `P` | Pause / resume |
 | `R` | Restart the selected flight |
 | Esc | Return to aircraft and airport selection |
 
 Mouse steering is off initially. When enabled, return the mouse to the centre
 to stop changing pitch/bank; use opposite input to level the plane.
-The game pauses when its window loses focus.
+The simulation keeps running when you click outside its window; held keys are
+released and mouse steering is centred, but throttle and attitude stay as they
+were. Press `P` to pause. In the browser, a hidden or minimised tab pauses
+because browsers stop animating it.
+A quick click on a cockpit button presses it; dragging never does.
 The cockpit's **GEAR**, **LIGHTS** and **MOUSE** buttons are also clickable.
 Browser touch users can use the **Landing gear** button above the view.
 Three green gear lights mean fully down, amber means moving, and dark means up.
@@ -166,6 +180,12 @@ is part of the exercise.
   linear acceleration; extended landing gear adds aerodynamic drag.
 
 This is a **simplified educational model**, not a realistic training simulator.
+Concorde has a low-lift delta wing, afterburner thrust and transonic drag, so it
+takes off fast and can go supersonic at altitude. Rough landings no longer just
+end the flight: burst tyres, collapsed gear, belly landings, wing/engine strikes
+and tail strikes appear as warnings and change how the aircraft rolls. Only
+catastrophic impacts end the flight.
+
 Aircraft have representative mass, wing area and thrust, but not certified
 handling. There is one rounded, representative runway per airport, a flat ground
 plane for ground contact, a shared runway elevation and an approximate local map.

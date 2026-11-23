@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { AIRPORTS, airportPosition, runwayContains } from "../browser/flight-model.mjs";
 import {
-  HILLS, airportClear, clipPolygon, geographic, heathrowScenery, inCity, isLand, regionalScenery, terrain,
+  CITY_OUTLINES, HILLS, airportClear, coarseTerrain, clipPolygon, geographic, heathrowScenery, inCity, isLand, regionalScenery, terrain,
 } from "../browser/scenery.mjs";
 
 test("coastlines put all airports on land and leave the Channel free of fields", () => {
@@ -73,4 +73,40 @@ test("horizon and near clipping retain only the correct half-space", () => {
   assert.deepEqual(clipPolygon(screen, () => -1), []);
   const near = clipPolygon([[0, 0, -2], [1, 0, 2], [0, 1, 2]], (p) => p[2] - 1);
   assert.ok(near.every((p) => p[2] >= 1));
+});
+
+test("cities use star-shaped outlines that are not ellipses, with London and Paris hand-shaped", () => {
+  assert.equal(CITY_OUTLINES.length, 14);
+  for (const city of CITY_OUTLINES) {
+    const [cx, cy] = city.centre;
+    const angles = city.points.map(([x, y]) => Math.atan2(y - cy, x - cx));
+    const turns = angles.map((a, i) => {
+      const d = angles[(i + 1) % angles.length] - a;
+      return Math.sign(Math.atan2(Math.sin(d), Math.cos(d)));
+    });
+    assert.ok(turns.every((t) => t === turns[0]), `${city.name} should wind around its centre`);
+    const radii = city.points.map(([x, y]) => Math.hypot(x - cx, y - cy));
+    assert.ok(Math.max(...radii) / Math.min(...radii) > 1.2, `${city.name} should not be round`);
+    assert.equal(inCity(cx, cy) || city.name === "Dover" || city.name === "Calais" || city.name === "Southend", true);
+  }
+  const london = CITY_OUTLINES[0];
+  assert.ok(london.points.length > 20);
+  // Beyond the outline but inside the old circular radius.
+  assert.equal(inCity(london.centre[0] - london.radius * 0.9, london.centre[1] + london.radius * 0.9), false);
+});
+
+test("coarse terrain reaches well beyond the detailed tiles and stays on land", () => {
+  const [x, y] = airportPosition(AIRPORTS[0]);
+  const ground = coarseTerrain(x, y, 22);
+  assert.ok(ground.length > 200);
+  assert.ok(ground.some(([points]) => Math.hypot(points[0][0] - x, points[0][1] - y) > 40000));
+  for (const [points] of ground) assert.ok(points.every(([a, b]) => isLand(a, b)));
+});
+
+test("start-up scenery builds quickly so the setup form is not blocked", () => {
+  const start = performance.now();
+  regionalScenery();
+  heathrowScenery();
+  const elapsed = performance.now() - start;
+  assert.ok(elapsed < 1500, `scenery took ${Math.round(elapsed)} ms`);
 });

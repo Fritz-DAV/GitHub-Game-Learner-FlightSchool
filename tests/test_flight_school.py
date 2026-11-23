@@ -1,5 +1,6 @@
 """Optional window checks; skip cleanly without Tkinter or a display."""
 
+import time
 import unittest
 import math
 from unittest.mock import Mock
@@ -37,7 +38,7 @@ class RendererTests(unittest.TestCase):
             moved_levers = [call.args for call in rectangles if call.kwargs.get("fill") == "#dde0d6"]
             self.assertAlmostEqual(moved[0] - grip[0], -0.75 * 23)
             self.assertAlmostEqual(moved[1] - grip[1], 0.5 * 18)
-            self.assertEqual(len(levers), 1 if aircraft == AIRCRAFT[0] else 2)
+            self.assertEqual(len(levers), aircraft.engines)
             for before, after in zip(levers, moved_levers):
                 self.assertAlmostEqual(after[1] - before[1], -0.8 * (760 * 0.21 - 64))
             moved_needle = next(call.args for call in app.canvas.create_line.call_args_list
@@ -184,6 +185,73 @@ class WindowTests(unittest.TestCase):
         self.root.update()
         self.assertTrue(self.app.menu.winfo_ismapped())
         self.assertEqual(self.app.keys, set())
+
+    def test_drag_looks_around_in_both_views_and_c_recentres(self):
+        self.app.start()
+        self.root.update()
+        canvas = self.app.canvas
+        for view in ("1", "2"):
+            self.press(view)
+            canvas.event_generate("<ButtonPress-1>", x=500, y=300)
+            canvas.event_generate("<B1-Motion>", x=300, y=400)
+            canvas.event_generate("<ButtonRelease-1>", x=300, y=400)
+            self.assertGreater(self.app.look_yaw, 0)
+            self.assertGreater(self.app.look_pitch, 0)
+            for _ in range(6):
+                canvas.event_generate("<ButtonPress-1>", x=900, y=300)
+                canvas.event_generate("<B1-Motion>", x=0, y=700)
+                canvas.event_generate("<ButtonRelease-1>", x=0, y=700)
+                self.app.draw()
+            self.assertLessEqual(self.app.look_pitch, 80)
+            self.assertTrue(-180 <= self.app.look_yaw < 180)
+            self.press("c")
+            self.assertEqual((self.app.look_yaw, self.app.look_pitch), (0, 0))
+
+    def test_short_click_presses_cockpit_buttons_but_a_drag_does_not(self):
+        self.app.start()
+        self.root.update()
+        self.press("1")
+        canvas = self.app.canvas
+        w, h = canvas.winfo_width(), canvas.winfo_height()
+        x, y = int(w * 0.8), int(h * 0.79 + 27)
+        lights = self.app.flight.lights_on
+        canvas.event_generate("<ButtonPress-1>", x=x, y=y)
+        canvas.event_generate("<B1-Motion>", x=x + 40, y=y)
+        canvas.event_generate("<ButtonRelease-1>", x=x + 40, y=y)
+        self.assertEqual(self.app.flight.lights_on, lights)
+        canvas.event_generate("<ButtonPress-1>", x=x, y=y)
+        canvas.event_generate("<ButtonRelease-1>", x=x, y=y)
+        self.assertEqual(self.app.flight.lights_on, not lights)
+
+    def test_fast_forward_speeds_up_time_and_resets(self):
+        self.app.start()
+        self.root.update()
+        scales = []
+        for _ in range(4):
+            self.press("f")
+            scales.append(self.app.time_scale)
+        self.assertEqual(scales, [2, 4, 8, 1])
+        self.press("f")
+        flight = self.app.flight
+        before = flight.time
+        self.app.last_frame = time.perf_counter() - 0.05
+        self.app._frame()
+        self.assertAlmostEqual(flight.time - before, 0.1, delta=0.03)
+        self.press("r")
+        self.assertEqual(self.app.time_scale, 1)
+
+    def test_losing_focus_keeps_the_simulation_running(self):
+        self.app.start()
+        self.root.update()
+        self.app.keys.add("w")
+        self.app.root.focus_displayof = lambda: None
+        self.app._focus_lost()
+        self.assertFalse(self.app.paused)
+        self.assertEqual(self.app.keys, set())
+        before = self.app.flight.time
+        self.app.last_frame = time.perf_counter() - 0.05
+        self.app._frame()
+        self.assertGreater(self.app.flight.time, before)
 
     def test_near_plane_clipping_avoids_dividing_by_zero(self):
         points = [(-1, -1, -2), (1, -1, 2), (0, 1, 2)]

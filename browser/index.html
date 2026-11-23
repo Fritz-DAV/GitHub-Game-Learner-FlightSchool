@@ -14,6 +14,7 @@
         <div class="top-actions">
           <button id="pause-button" class="quiet" type="button" disabled>Pause</button>
           <button id="view-button" class="quiet" type="button" disabled>External view</button>
+          <button id="speed-button" class="quiet" type="button" disabled>Speed: 1x</button>
           <button id="mouse-button" class="quiet" type="button" disabled>Mouse steering: off</button>
           <button id="gear-button" class="quiet" type="button" disabled>Landing gear (G)</button>
           <button id="restart-button" class="quiet" type="button" disabled>Restart</button>
@@ -58,9 +59,10 @@
         <div class="canvas-wrap">
           <canvas id="scene" tabindex="0" aria-label="Flight view"></canvas>
           <div class="status-chip" id="status-chip">Ready</div>
+          <div class="damage-alerts" id="damage-alerts" role="alert"></div>
           <div class="map-card">
             <canvas id="map" aria-label="Route map"></canvas>
-            <span>N ↑ &nbsp; Route map</span>
+            <span>N ↑ &nbsp; Route map &amp; cloud cover</span>
           </div>
         </div>
         <div class="instrument-row">
@@ -78,6 +80,7 @@
           <span><kbd>Q / E</kbd> steer</span>
           <span><kbd>+ / −</kbd> throttle · <kbd>Space</kbd> brake</span>
           <span><kbd>G</kbd> landing gear · <kbd>L</kbd> instrument lights</span>
+          <span><kbd>Drag</kbd> look around · <kbd>C</kbd> centre view · <kbd>F</kbd> fast-forward 2x/4x/8x</span>
           <span><kbd>V</kbd> view · <kbd>M</kbd> mouse steering · <kbd>P</kbd> pause · <kbd>R</kbd> restart · <kbd>Esc</kbd> menu</span>
         </div>
         <div class="touch-controls" aria-label="Touch flight controls">

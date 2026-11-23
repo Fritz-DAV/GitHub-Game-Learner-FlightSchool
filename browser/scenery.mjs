@@ -62,20 +62,67 @@ export function geographic(longitude, latitude) {
 }
 const land = COASTS.map((coast) => coast.map((p) => geographic(...p)));
 export const LAND_SURFACES = land.map((coast) => [coast.map(([x, y]) => [x, y, -0.1]), "#82936e"]);
-const cityPositions = CITIES.map(([, lon, lat, radius]) => [geographic(lon, lat), radius]);
+// Hand-simplified built-up outlines in units of the city radius (x east, y north).
+const CITY_SHAPES = {
+  // London sprawls along the Thames estuary and out to Hounslow/Kingston.
+  London: [[0, 0.72], [0.25, 0.78], [0.45, 0.62], [0.62, 0.7], [0.85, 0.55],
+    [1.05, 0.42], [1.25, 0.3], [1.45, 0.18], [1.3, 0.02], [1.05, -0.12],
+    [0.9, -0.3], [0.8, -0.55], [0.55, -0.7], [0.25, -0.78], [0, -0.74],
+    [-0.3, -0.82], [-0.55, -0.7], [-0.8, -0.55], [-1.05, -0.35], [-1.3, -0.2],
+    [-1.3, 0.05], [-1.05, 0.25], [-0.9, 0.45], [-0.7, 0.6], [-0.4, 0.62]],
+  // Paris is compact and round, bulging around the Seine meanders and the north-east.
+  Paris: [[0, 0.85], [0.3, 0.9], [0.55, 0.75], [0.85, 0.7], [1.0, 0.45],
+    [1.1, 0.15], [0.95, -0.1], [0.9, -0.4], [0.6, -0.6], [0.3, -0.8],
+    [0, -0.7], [-0.35, -0.85], [-0.7, -0.7], [-0.95, -0.4], [-1.15, -0.1],
+    [-1.05, 0.25], [-0.85, 0.55], [-0.55, 0.75], [-0.25, 0.7]],
+};
+// Other towns: [stretch, angle in degrees anticlockwise from east] following roads or coast.
+const TOWN_STYLE = {
+  Slough: [1.5, 0], Watford: [1.3, 70], Luton: [1.2, 40], Harlow: [1.2, 90],
+  Chelmsford: [1.2, 20], Cambridge: [1.1, 0], Southend: [1.9, 0], Maidstone: [1.3, 60],
+  Canterbury: [1.1, 30], Dover: [1.7, 35], Calais: [1.4, 10], Amiens: [1.2, 90],
+};
+function townShape(name) {
+  let hash = 7;
+  for (const letter of name) hash = (hash * 31 + letter.charCodeAt(0)) >>> 0;
+  const [stretch, angle] = TOWN_STYLE[name];
+  const phase = [(hash % 628) / 100, ((hash >>> 5) % 628) / 100];
+  const rotation = angle * Math.PI / 180;
+  return Array.from({ length: 14 }, (_, i) => {
+    const t = i * Math.PI * 2 / 14;
+    const r = 1 + 0.16 * Math.sin(2 * t + phase[0]) + 0.1 * Math.sin(3 * t + phase[1]);
+    const x = r * Math.cos(t) * Math.sqrt(stretch);
+    const y = r * Math.sin(t) / Math.sqrt(stretch);
+    return [x * Math.cos(rotation) - y * Math.sin(rotation), x * Math.sin(rotation) + y * Math.cos(rotation)];
+  });
+}
+export const CITY_OUTLINES = CITIES.map(([name, lon, lat, radius]) => {
+  const [cx, cy] = geographic(lon, lat);
+  const shape = CITY_SHAPES[name] ?? townShape(name);
+  const points = shape.map(([u, v]) => [cx + u * radius, cy + v * radius]);
+  const xs = points.map((p) => p[0]);
+  const ys = points.map((p) => p[1]);
+  return {
+    name, lon, lat, radius, centre: [cx, cy], points,
+    reach: Math.max(...points.map((p) => Math.hypot(p[0] - cx, p[1] - cy))),
+    box: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)],
+  };
+});
+function insidePolygon(points, x, y) {
+  let inside = false;
+  points.forEach(([bx, by], i) => {
+    const [ax, ay] = points[(i + points.length - 1) % points.length];
+    if ((ay > y) !== (by > y) && x < (bx - ax) * (y - ay) / (by - ay) + ax) inside = !inside;
+  });
+  return inside;
+}
+const inOutline = (city, x, y) => x >= city.box[0] && x <= city.box[2] && y >= city.box[1]
+  && y <= city.box[3] && insidePolygon(city.points, x, y);
 export function inCity(x, y) {
-  return cityPositions.some(([[cx, cy], radius]) => ((x - cx) / radius) ** 2
-    + ((y - cy) / (radius * 0.65)) ** 2 < 1);
+  return CITY_OUTLINES.some((city) => inOutline(city, x, y));
 }
 export function isLand(x, y) {
-  return land.some((coast) => {
-    let inside = false;
-    coast.forEach(([bx, by], i) => {
-      const [ax, ay] = coast[(i + coast.length - 1) % coast.length];
-      if ((ay > y) !== (by > y) && x < (bx - ax) * (y - ay) / (by - ay) + ax) inside = !inside;
-    });
-    return inside;
-  });
+  return land.some((coast) => insidePolygon(coast, x, y));
 }
 const cellSeed = (x, y) => (Math.imul(x, 73856093) ^ Math.imul(y, 19349663)) & 0x7fffffff;
 
@@ -89,35 +136,51 @@ export function regionalScenery() {
     roads.push(...ribbon(points, motorway ? 32 : 14, "#666b69"));
     if (motorway) roads.push(...ribbon(points, 3, "#b0b295"));
   }
-  for (const [city, lon, lat, radius] of CITIES) {
-    const [x, y] = geographic(lon, lat);
-    for (let i = 0; i < 32; i += 1) {
-      const a = i * Math.PI * 2 / 32;
-      const b = (i + 1) * Math.PI * 2 / 32;
-      const sector = [[x, y, 0.005],
-        [x + radius * Math.cos(a), y + radius * Math.sin(a) * 0.65, 0.005],
-        [x + radius * Math.cos(b), y + radius * Math.sin(b) * 0.65, 0.005]];
-      if (sector.every(([px, py]) => isLand(px, py) && airportClear(px, py))) ground.push([sector, "#92917f"]);
-    }
-    for (let i = -4; i <= 4; i += 1) {
-      const offset = radius * i / 5;
-      const extent = Math.sqrt(radius * radius - offset * offset);
-      for (const points of [[[x - extent, y + offset * 0.65], [x + extent, y + offset * 0.65]],
-        [[x + offset, y - extent * 0.65], [x + offset, y + extent * 0.65]]]) {
-        if (points.every((p) => isLand(...p) && airportClear(...p))) ground.push(...ribbon(points, 12, "#777872"));
+  for (const outline of CITY_OUTLINES) {
+    const { name: city, lon, centre: [x, y], reach } = outline;
+    const at = (p, scale) => [x + (p[0] - x) * scale, y + (p[1] - y) * scale, 0.005];
+    const usable = (points) => points.every(([px, py]) => isLand(px, py) && airportClear(px, py));
+    // Suburban fringe, outer built-up ring, then a denser core.
+    const rings = [[1.0, 1.22, "#8b9172"], [0.5, 1.0, "#92917f"]];
+    outline.points.forEach((p, i) => {
+      const q = outline.points[(i + 1) % outline.points.length];
+      for (const [inner, outer, color] of rings) {
+        const quad = [at(p, inner), at(p, outer), at(q, outer), at(q, inner)];
+        if (usable(quad)) ground.push([quad, color]);
+      }
+      const core = [[x, y, 0.005], at(p, 0.5), at(q, 0.5)];
+      if (usable(core)) ground.push([core, "#9a9886"]);
+    });
+    const angle = ((lon * 1000) % 40) * Math.PI / 180;
+    const along = [Math.cos(angle), Math.sin(angle)];
+    const step = reach / 8;
+    for (let line = -4; line <= 4; line += 1) {
+      const offset = reach * line / 5;
+      for (const [dx, dy, nx, ny] of [[along[0], along[1], -along[1], along[0]],
+        [-along[1], along[0], along[0], along[1]]]) {
+        for (let t = -reach; t < reach; t += step) {
+          const piece = [[x + nx * offset + dx * t, y + ny * offset + dy * t],
+            [x + nx * offset + dx * (t + step), y + ny * offset + dy * (t + step)]];
+          if (piece.every((p) => inOutline(outline, ...p) && isLand(...p) && airportClear(...p))) {
+            ground.push(...ribbon(piece, 12, "#777872"));
+          }
+        }
       }
     }
-    const count = ["London", "Paris"].includes(city) ? 320 : 80;
-    for (let i = 0; i < count; i += 1) {
+    const tall = ["London", "Paris"].includes(city);
+    const count = tall ? 320 : 80;
+    let placed = 0;
+    for (let i = 0; i < count * 3 && placed < count; i += 1) {
       const seed = cellSeed(i + 1, Math.trunc(lon * 1000));
-      const angle = i * 2.399963;
-      const distance = radius * Math.sqrt((i + 0.5) / count);
-      const px = x + Math.cos(angle) * distance;
-      const py = y + Math.sin(angle) * distance * 0.65;
-      if (!isLand(px, py) || !airportClear(px, py)) continue;
+      const angleOut = i * 2.399963;
+      const distance = reach * Math.sqrt((i + 0.5) / (count * 3));
+      const px = x + Math.cos(angleOut) * distance;
+      const py = y + Math.sin(angleOut) * distance;
+      if (!inOutline(outline, px, py) || !isLand(px, py) || !airportClear(px, py)) continue;
+      placed += 1;
       const w = 100 + seed % 220;
       const d = 80 + seed % 150;
-      const height = 8 + seed % 20 + (["London", "Paris"].includes(city) && i < 10 ? 55 : 0);
+      const height = 8 + seed % 20 + (tall && placed < 10 ? 55 : 0);
       const block = [[px - 260, py - 220, 0.01], [px + 260, py - 220, 0.01],
         [px + 260, py + 220, 0.01], [px - 260, py + 220, 0.01]];
       if (block.every(([a, b]) => isLand(a, b) && airportClear(a, b))) {
@@ -136,7 +199,7 @@ export function regionalScenery() {
       const b = (i + 1) * Math.PI * 2 / 20;
       solids.push([[[x + rx * Math.cos(a), y + ry * Math.sin(a), 0],
         [x + rx * Math.cos(b), y + ry * Math.sin(b), 0], [x + rx * 0.12, y, height]],
-      ["#64794f", "#718159", "#7d8964", "#596e49"][i % 4]]);
+      ["#64794f", "#718159", "#7d8964", "#596e49"][i % 4], true]);
     }
   }
   return { ground: [...ground, ...roads], solids };
@@ -232,6 +295,30 @@ export function terrain(x, y) {
   const geometry = { ground, solids };
   terrainCache = { cx, cy, geometry };
   return geometry;
+}
+
+const coarseColors = ["#76895a", "#7d8c5f", "#72855a", "#85905f", "#788a5c"];
+let coarseCache = null;
+
+// Large low-detail patches that carry the field pattern out to the horizon.
+export function coarseTerrain(x, y, cells = 16) {
+  const size = 4000;
+  const cx = Math.floor(x / size);
+  const cy = Math.floor(y / size);
+  if (coarseCache?.cx === cx && coarseCache?.cy === cy && coarseCache?.cells === cells) return coarseCache.ground;
+  const ground = [];
+  for (let ix = cx - cells; ix <= cx + cells; ix += 1) {
+    for (let iy = cy - cells; iy <= cy + cells; iy += 1) {
+      const px = ix * size;
+      const py = iy * size;
+      if (Math.abs(px + size / 2 - x) < 6000 && Math.abs(py + size / 2 - y) < 6000) continue;
+      const corners = [[px, py], [px + size, py], [px + size, py + size], [px, py + size]];
+      if (!corners.every(([a, b]) => isLand(a, b))) continue;
+      ground.push([corners.map(([a, b]) => [a, b, -0.05]), coarseColors[cellSeed(ix, iy) % coarseColors.length]]);
+    }
+  }
+  coarseCache = { cx, cy, cells, ground };
+  return ground;
 }
 
 function ribbon3d(a, b, width, color) {

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  AIRCRAFT, AIRPORTS, Flight, airportPosition, runwayContains,
+  AIRCRAFT, AIRPORTS, Flight, airportPosition, runwayContains, clampLook, nextTimeScale,
 } from "../browser/flight-model.mjs";
 
 test("each aircraft starts on each airport's runway", () => {
@@ -141,7 +141,108 @@ test("gear adds drag and landing without fully extended gear fails for both jets
       f.gearDown = gear === 1;
       f.update(0.02);
       assert.equal(f.completed, gear === 1);
-      assert.equal(f.crashed, gear !== 1);
+      assert.equal(f.crashed, false);
+      assert.deepEqual(f.damageKinds, gear === 1 ? [] : ["belly"]);
     }
   }
+});
+
+function landing() {
+  const f = new Flight(AIRCRAFT[0], AIRPORTS[0], AIRPORTS[1], 0);
+  [f.x, f.y] = airportPosition(f.destination);
+  f.heading = f.destination.runwayHeading;
+  [f.z, f.vz, f.vx] = [0.01, -1, 30];
+  f.onGround = false;
+  return f;
+}
+
+test("hard landings cause specific damage instead of ending the flight", () => {
+  const cases = [["vz", -4, ["tyres"]], ["vz", -6, ["gear", "tyres"]], ["bank", 30, ["wing"]],
+    ["vx", 60, ["tyres"]], ["pitch", 20, ["tail"]], ["pitch", -8, ["nose_gear"]],
+    ["heading", 110, ["tyres"]], ["x", 1e6, ["terrain"]]];
+  for (const [attribute, value, kinds] of cases) {
+    const f = landing();
+    f[attribute] = value;
+    f.update(0.02);
+    assert.equal(f.crashed, false, attribute);
+    assert.equal(f.completed, false);
+    assert.deepEqual([...f.damageKinds].sort(), [...kinds].sort(), `${attribute} ${value}`);
+    assert.match(f.message, /WARNING/);
+    for (const text of f.damage) assert.ok(f.message.includes(text));
+  }
+});
+
+test("catastrophic landings crash and report damage", () => {
+  for (const [attribute, value] of [["vz", -9], ["bank", 50], ["heading", 0]]) {
+    const f = landing();
+    f[attribute] = value;
+    f.update(0.02);
+    assert.equal(f.crashed, true, attribute);
+    assert.match(f.message, /CRASH/);
+  }
+  const f = landing();
+  f.vz = -9;
+  f.update(0.02);
+  assert.ok(f.message.includes("Landing gear collapsed"));
+});
+
+test("damaged aircraft slow down, cannot fly again and arrive only once stopped", () => {
+  const clean = landing();
+  const broken = landing();
+  broken.vz = -6;
+  for (const f of [clean, broken]) {
+    f.update(0.02);
+    for (let i = 0; i < 240; i += 1) f.update(0.25 / 30);
+  }
+  assert.ok(broken.groundSpeed < clean.groundSpeed);
+  broken.throttle = 1;
+  for (let i = 0; i < 1800; i += 1) broken.update(1 / 30, 1);
+  assert.equal(broken.z, 0);
+  assert.equal(broken.unflyable, true);
+  const tyres = landing();
+  tyres.vz = -4;
+  tyres.update(0.02);
+  assert.equal(tyres.completed, false);
+  for (let i = 0; i < 1800; i += 1) tyres.update(1 / 30, 0, 0, 0, true);
+  assert.equal(tyres.completed, true);
+  assert.match(tyres.message, /Tyres burst/);
+});
+
+test("tail strike on over-rotation is reported", () => {
+  const f = new Flight(AIRCRAFT[1], AIRPORTS[0], AIRPORTS[1], 0);
+  f.vx = f.vy = 20;
+  f.pitch = 20;
+  f.update(0.02);
+  assert.deepEqual(f.damageKinds, ["tail"]);
+  assert.match(f.message, /tail strike/);
+});
+
+test("Concorde takes off fast and reaches supersonic speed without damage", () => {
+  const f = new Flight(AIRCRAFT[3], AIRPORTS[0], AIRPORTS[1], 0, 270, false);
+  f.throttle = 1;
+  let liftoff = null;
+  for (let i = 0; i < 30 * 400; i += 1) {
+    const target = f.z < 1500 ? 12 : Math.max(2, Math.min(10, (15000 - f.z) / 200));
+    const elevator = f.airspeed > 95 ? 0.5 * clampUnit((target - f.pitch) / 4) : 0;
+    if (f.z > 300 && f.gearDown) f.toggleGear();
+    f.update(1 / 30, elevator);
+    if (liftoff === null && !f.onGround) liftoff = f.airspeed;
+  }
+  assert.equal(f.crashed, false);
+  assert.deepEqual(f.damageKinds, []);
+  assert.ok(liftoff > 90 && liftoff < 130);
+  assert.ok(f.mach > 1.1);
+});
+
+const clampUnit = (v) => Math.max(-1, Math.min(1, v));
+
+test("look angles wrap yaw and limit pitch; fast-forward cycles 1x to 8x", () => {
+  assert.deepEqual(clampLook(190, 0), [-170, 0]);
+  assert.deepEqual(clampLook(-190, 0), [170, 0]);
+  assert.deepEqual(clampLook(0, 120), [0, 80]);
+  assert.deepEqual(clampLook(0, -120), [0, -80]);
+  let scale = 1;
+  const seen = [];
+  for (let i = 0; i < 5; i += 1) seen.push(scale = nextTimeScale(scale));
+  assert.deepEqual(seen, [2, 4, 8, 1, 2]);
 });

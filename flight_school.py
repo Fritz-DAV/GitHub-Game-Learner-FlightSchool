@@ -5,12 +5,21 @@ import time
 import tkinter as tk
 from tkinter import ttk
 
-from flight_model import AIRCRAFT, AIRPORTS, Flight, clamp
+from flight_model import AIRCRAFT, AIRPORTS, Flight, clamp, clamp_look, next_time_scale
 from aircraft_visuals import aircraft_surfaces
 from scenery import LAND_SURFACES, clip_polygon, heathrow_scenery, regional_scenery, terrain
 
 
+LOOK_SENSITIVITY = 0.25  # degrees of look-around per dragged pixel
+CLICK_SLOP = 4  # pixels of movement before a press becomes a look-around drag
+
+
 class FlightSchool:
+    # Class-level defaults keep the view state valid before a flight starts.
+    look_yaw = look_pitch = 0.0
+    time_scale = 1
+    drag = None
+
     def __init__(self, root):
         self.root = root
         root.title("Flight School — learn to fly")
@@ -32,10 +41,12 @@ class FlightSchool:
         root.bind("<KeyRelease>", lambda event: self.keys.discard(event.keysym.lower()))
         root.bind("<FocusOut>", lambda event: root.after_idle(self._focus_lost))
         self.canvas.bind("<Motion>", self._mouse_move)
+        self.canvas.bind("<ButtonPress-1>", self._press)
+        self.canvas.bind("<B1-Motion>", self._drag_move)
+        self.canvas.bind("<ButtonRelease-1>", self._release)
         self.canvas.bind("<MouseWheel>", lambda event: self._wheel(event.delta / 120))
         self.canvas.bind("<Button-4>", lambda event: self._wheel(1))
         self.canvas.bind("<Button-5>", lambda event: self._wheel(-1))
-        self.canvas.bind("<Button-1>", self._cockpit_click)
         self.show_menu()
         root.after(16, self._frame)
 
@@ -66,6 +77,8 @@ class FlightSchool:
                  "Throttle: + / − or mouse wheel     Pitch: ↑/↓ or W/S\n"
                  "Bank: ←/→ or A/D     Steering: Q/E     Brakes: Space\n"
                  "M: mouse steering     V: change view     P: pause\n"
+                 "Drag the mouse: look around     C: centre view\n"
+                 "F: fast-forward (2x, 4x, 8x, normal)\n"
                  "G: landing gear     L: instrument lights\n"
                  "R: restart     Esc: choose a different flight\n\n"
                  "Simplified learning simulator — not for real-world training.",
@@ -73,6 +86,7 @@ class FlightSchool:
 
     def show_menu(self):
         self.keys.clear()
+        self._reset_view()
         self.canvas.pack_forget()
         self.menu.pack(expand=True)
 
@@ -90,6 +104,7 @@ class FlightSchool:
         self.keys.clear()
         self.mouse = (0, 0)
         self.paused = False
+        self._reset_view()
         self.menu.pack_forget()
         self.menu_message.config(text="")
         self.canvas.pack(fill="both", expand=True)
@@ -105,8 +120,13 @@ class FlightSchool:
         self.keys.add(key)
         if key in ("v", "1", "2"):
             self.external = not self.external if key == "v" else key == "2"
+            self.look_yaw = self.look_pitch = 0.0
         elif key == "p":
             self.paused = not self.paused
+        elif key == "f":
+            self.time_scale = next_time_scale(self.time_scale)
+        elif key == "c":
+            self.look_yaw = self.look_pitch = 0.0
         elif key == "m":
             self.mouse_enabled = not self.mouse_enabled
             self.mouse = (0, 0)
@@ -119,11 +139,40 @@ class FlightSchool:
         elif key == "escape":
             self.show_menu()
 
+    def _reset_view(self):
+        self.look_yaw = self.look_pitch = 0.0
+        self.time_scale = 1
+        self.drag = None
+
     def _focus_lost(self):
+        # The simulation keeps running in the background; only held keys are
+        # released and mouse steering centred so nothing stays stuck.
         if self.canvas.winfo_ismapped() and self.root.focus_displayof() is None:
             self.keys.clear()
             self.mouse = (0, 0)
-            self.paused = True
+            self.drag = None
+
+    def _press(self, event):
+        self.canvas.focus_set()
+        self.drag = [event.x, event.y, event.x, event.y, False]
+
+    def _drag_move(self, event):
+        self._mouse_move(event)
+        if not self.drag:
+            return
+        start_x, start_y, last_x, last_y, moved = self.drag
+        if not moved and math.hypot(event.x - start_x, event.y - start_y) <= CLICK_SLOP:
+            return
+        # Dragging grabs the world, as in a street-view panorama.
+        self.look_yaw, self.look_pitch = clamp_look(
+            self.look_yaw - (event.x - last_x) * LOOK_SENSITIVITY,
+            self.look_pitch + (event.y - last_y) * LOOK_SENSITIVITY)
+        self.drag = [start_x, start_y, event.x, event.y, True]
+
+    def _release(self, event):
+        drag, self.drag = self.drag, None
+        if drag and not drag[4]:
+            self._cockpit_click(event)
 
     def _cockpit_click(self, event):
         self.canvas.focus_set()
@@ -172,29 +221,54 @@ class FlightSchool:
                 if self.mouse_enabled:
                     aileron += self.mouse[0]
                     elevator += self.mouse[1]
-                self.flight.update(dt, elevator, aileron,
-                                   self._axis({"e"}, {"q"}), brake="space" in self.keys)
+                rudder, brake = self._axis({"e"}, {"q"}), "space" in self.keys
+                # Several normal-sized steps per frame speed the simulation up
+                # without dropping time to the model's per-update limit.
+                for _ in range(self.time_scale):
+                    self.flight.update(dt, elevator, aileron, rudder, brake)
+                    if self.flight.crashed or self.flight.completed:
+                        self.time_scale = 1
+                        break
             self.draw()
         self.root.after(16, self._frame)
 
     def _camera(self):
         f = self.flight
         heading = math.radians(f.heading)
+        yaw, pitch_look = math.radians(self.look_yaw), math.radians(self.look_pitch)
         if self.external:
-            distance, height = (32, 11) if f.aircraft == AIRCRAFT[0] else (85, 28)
-            self.eye = (f.x - math.sin(heading) * distance,
-                        f.y - math.cos(heading) * distance, f.z + height)
-            pitch, bank = math.radians(-12), 0
+            distance, height = (32, 11) if f.aircraft == AIRCRAFT[0] else (
+                (120, 36) if f.aircraft.supersonic else (85, 28))
+            # Orbit the aircraft; the default elevation keeps the original -12 degree view.
+            base = math.atan2(height, distance)
+            elevation = clamp(base + pitch_look, math.radians(-80), math.radians(80))
+            azimuth = heading + yaw
+            radius = math.hypot(distance, height)
+            self.eye = (f.x - math.sin(azimuth) * math.cos(elevation) * radius,
+                        f.y - math.cos(azimuth) * math.cos(elevation) * radius,
+                        f.z + math.sin(elevation) * radius)
+            heading, pitch, bank = azimuth, base - math.radians(12) - elevation, 0
+            yaw = pitch_look = 0
         else:
-            self.eye = (f.x, f.y, f.z + (2 if f.aircraft == AIRCRAFT[0] else 5))
+            self.eye = (f.x, f.y, f.z + (2 if f.aircraft == AIRCRAFT[0]
+                                   else 6 if f.aircraft.supersonic else 5))
             pitch, bank = math.radians(f.pitch), math.radians(f.bank)
         right = (math.cos(heading), -math.sin(heading), 0)
         up = (-math.sin(heading) * math.sin(pitch),
               -math.cos(heading) * math.sin(pitch), math.cos(pitch))
-        self.forward = (math.sin(heading) * math.cos(pitch),
-                        math.cos(heading) * math.cos(pitch), math.sin(pitch))
-        self.right = tuple(r * math.cos(bank) - u * math.sin(bank) for r, u in zip(right, up))
-        self.up = tuple(u * math.cos(bank) + r * math.sin(bank) for r, u in zip(right, up))
+        forward = (math.sin(heading) * math.cos(pitch),
+                   math.cos(heading) * math.cos(pitch), math.sin(pitch))
+        right_b = tuple(r * math.cos(bank) - u * math.sin(bank) for r, u in zip(right, up))
+        up_b = tuple(u * math.cos(bank) + r * math.sin(bank) for r, u in zip(right, up))
+        # Turn the head: yaw about the camera's up axis, then pitch about its right axis.
+        forward, right_b = (
+            tuple(f_ * math.cos(yaw) + r * math.sin(yaw) for f_, r in zip(forward, right_b)),
+            tuple(r * math.cos(yaw) - f_ * math.sin(yaw) for f_, r in zip(forward, right_b)))
+        self.forward = tuple(f_ * math.cos(pitch_look) + u * math.sin(pitch_look)
+                             for f_, u in zip(forward, up_b))
+        self.up = tuple(u * math.cos(pitch_look) - f_ * math.sin(pitch_look)
+                        for f_, u in zip(forward, up_b))
+        self.right = right_b
         self.camera_pitch, self.camera_bank = pitch, bank
 
     def _camera_point(self, point):
@@ -289,7 +363,7 @@ class FlightSchool:
                          up * math.cos(pitch) + along * math.sin(pitch))
             return (f.x + across * math.cos(heading) + along * math.sin(heading),
                     f.y - across * math.sin(heading) + along * math.cos(heading),
-                    f.z + (1.5 if f.aircraft == AIRCRAFT[0] else 3.3) + up)
+                    f.z + f.aircraft.datum + up)
 
         surfaces = aircraft_surfaces(f.aircraft, f.gear, f.time, f.engine_power)
         transformed = [([world(point) for point in points], color) for points, color in surfaces]
@@ -387,7 +461,7 @@ class FlightSchool:
         c.create_rectangle(grip_x - 8, grip_y - 15, grip_x + 8, grip_y + 5,
                            fill="#111a21", outline="#7b8d98", width=2)
         c.create_oval(grip_x - 3, grip_y - 12, grip_x + 3, grip_y - 6, fill="#d95746")
-        for i in range(1 if f.aircraft == AIRCRAFT[0] else 2):
+        for i in range(f.aircraft.engines):
             tx = w * 0.59 + i * 18
             c.create_rectangle(tx - 4, top + 20, tx + 4, h - 30, fill="#0c141b", outline="#66717b")
             ty = h - 36 - f.throttle * (h - top - 64)
@@ -420,6 +494,9 @@ class FlightSchool:
         c.create_text(18, 19, anchor="w", fill="white", font=("", 13, "bold"),
                       text=f"{f.aircraft.name}   |   {f.departure.code} → {f.destination.code}"
                            f"   |   {'External' if self.external else 'Cockpit'} view")
+        if self.time_scale > 1:
+            c.create_text(w - 18, 19, anchor="e", fill="#ffd47d", font=("", 14, "bold"),
+                          text=f"▶▶ {self.time_scale}x")
         c.create_text(18, 47, anchor="w", fill="#a9ebca", font=("TkFixedFont", 12),
                       text=f"AIR {f.airspeed * 1.94384:5.0f} kt   "
                            f"ALT {f.z * 3.28084:6.0f} ft   HDG {f.heading:03.0f}°   "
@@ -442,7 +519,8 @@ class FlightSchool:
             c.create_text(18, h - 51, anchor="w", fill="white",
                           text="Arrows/WASD pitch/bank · Q/E steer · +/− throttle · Space brake · G gear · L lights")
             c.create_text(18, h - 25, anchor="w", fill="white",
-                          text="V views · M mouse · Wheel throttle · P pause · R restart · Esc menu")
+                          text="V views · Drag look · C centre · F fast-forward · M mouse · "
+                               "Wheel throttle · P pause · R restart · Esc menu")
         else:
             c.create_text(18, 103, anchor="w", fill="#fff3aa", text=f.message, font=("", 10))
         warning = ("PAUSED — P to continue" if self.paused else
@@ -452,6 +530,12 @@ class FlightSchool:
         if warning:
             c.create_rectangle(w / 2 - 220, 108, w / 2 + 220, 148, fill="#472e28", outline="")
             c.create_text(w / 2, 128, text=warning, fill="#ffdf91", font=("", 16, "bold"))
+        for i, text in enumerate(f.damage):
+            y = 160 + i * 30
+            c.create_rectangle(w / 2 - 220, y - 13, w / 2 + 220, y + 13,
+                               fill="#7a1f17", outline="#ffb199")
+            c.create_text(w / 2, y, text=f"⚠ {text.upper()}", fill="#fff0c2",
+                          font=("", 12, "bold"))
 
 
 def main():

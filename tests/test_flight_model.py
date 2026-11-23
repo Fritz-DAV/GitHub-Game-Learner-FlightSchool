@@ -1,6 +1,6 @@
 import unittest
 
-from flight_model import AIRCRAFT, AIRPORTS, Flight
+from flight_model import AIRCRAFT, AIRPORTS, Flight, clamp_look, next_time_scale
 
 
 class FlightTests(unittest.TestCase):
@@ -82,14 +82,64 @@ class FlightTests(unittest.TestCase):
         self.assertFalse(flight.completed)
         self.assertFalse(flight.crashed)
 
-    def test_unsafe_landings_fail(self):
-        for attribute, value in (("vz", -6), ("bank", 30), ("vx", 60),
-                                 ("heading", 0), ("x", 1e6)):
+    def test_hard_landings_cause_specific_damage_instead_of_ending_the_flight(self):
+        for attribute, value, kinds in (
+                ("vz", -4, ["tyres"]), ("vz", -6, ["gear", "tyres"]), ("bank", 30, ["wing"]),
+                ("vx", 60, ["tyres"]), ("pitch", 20, ["tail"]), ("pitch", -8, ["nose_gear"]),
+                ("heading", 90 + 20, ["tyres"]), ("x", 1e6, ["terrain"])):
+            flight = self.landing()
+            setattr(flight, attribute, value)
+            flight.update(0.02)
+            self.assertFalse(flight.crashed, (attribute, value))
+            self.assertFalse(flight.completed)
+            self.assertEqual(sorted(flight.damage_kinds), sorted(kinds), (attribute, value))
+            self.assertIn("WARNING", flight.message)
+            for text in flight.damage:
+                self.assertIn(text, flight.message)
+
+    def test_catastrophic_landings_crash_and_report_damage(self):
+        for attribute, value in (("vz", -9), ("bank", 50), ("heading", 0)):
             flight = self.landing()
             setattr(flight, attribute, value)
             flight.update(0.02)
             self.assertTrue(flight.crashed, attribute)
-            self.assertFalse(flight.completed)
+            self.assertIn("CRASH", flight.message)
+        flight = self.landing()
+        flight.vz = -9
+        flight.update(0.02)
+        self.assertIn("Landing gear collapsed", flight.message)
+
+    def test_damaged_aircraft_is_slowed_pulled_aside_and_cannot_fly_again(self):
+        clean, broken = self.landing(), self.landing()
+        broken.vz = -6
+        for flight in (clean, broken):
+            flight.update(0.02)
+            for _ in range(240):
+                flight.update(0.25 / 30)
+        self.assertLess(broken.vx ** 2 + broken.vy ** 2, clean.vx ** 2 + clean.vy ** 2)
+        broken.throttle = 1
+        for _ in range(60 * 30):
+            broken.update(1 / 30, elevator=1)
+        self.assertEqual(broken.z, 0)
+        self.assertTrue(broken.unflyable)
+
+    def test_damaged_arrival_completes_only_once_stopped_at_destination(self):
+        flight = self.landing()
+        flight.vz = -4
+        flight.update(0.02)
+        self.assertFalse(flight.completed)
+        for _ in range(60 * 30):
+            flight.update(1 / 30, brake=True)
+        self.assertTrue(flight.completed)
+        self.assertIn("Tyres burst", flight.message)
+
+    def test_tail_strike_on_over_rotation(self):
+        flight = Flight(wind_speed=0)
+        flight.vx = flight.vy = 20
+        flight.pitch = 20
+        flight.update(0.02)
+        self.assertEqual(flight.damage_kinds, ["tail"])
+        self.assertIn("tail strike", flight.message)
 
     def test_stall_reduces_lift(self):
         flight = Flight(wind_speed=0)
@@ -191,7 +241,42 @@ class FlightTests(unittest.TestCase):
                 flight.gear_down = gear == 1
                 flight.update(0.02)
                 self.assertEqual(flight.completed, gear == 1)
-                self.assertEqual(flight.crashed, gear != 1)
+                self.assertFalse(flight.crashed)
+                self.assertEqual(flight.damage_kinds, [] if gear == 1 else ["belly"])
+
+    def test_concorde_takes_off_fast_and_reaches_supersonic_speed(self):
+        flight = Flight(AIRCRAFT[3], wind_speed=0, gusts=False)
+        flight.throttle = 1
+        liftoff = None
+        for step in range(30 * 400):
+            # Rotate near 95 m/s, climb, then ease to a shallow cruise attitude.
+            target = 12 if flight.z < 1500 else max(2, min(10, (15000 - flight.z) / 200))
+            climb = 0.5 * max(-1, min(1, (target - flight.pitch) / 4)) if (
+                flight.airspeed > 95) else 0
+            if flight.z > 300 and flight.gear_down:
+                flight.toggle_gear()
+            flight.update(1 / 30, elevator=climb)
+            if liftoff is None and not flight.on_ground:
+                liftoff = flight.airspeed
+        self.assertFalse(flight.crashed)
+        self.assertEqual(flight.damage_kinds, [])
+        self.assertGreater(liftoff, 90)
+        self.assertLess(liftoff, 130)
+        self.assertGreater(flight.mach, 1.1)
+
+
+    def test_look_angles_wrap_yaw_and_limit_pitch(self):
+        self.assertEqual(clamp_look(190, 0), (-170, 0))
+        self.assertEqual(clamp_look(-190, 0), (170, 0))
+        self.assertEqual(clamp_look(0, 120), (0, 80))
+        self.assertEqual(clamp_look(0, -120), (0, -80))
+
+    def test_fast_forward_cycles_through_2x_4x_8x_and_back(self):
+        scale, seen = 1, []
+        for _ in range(5):
+            scale = next_time_scale(scale)
+            seen.append(scale)
+        self.assertEqual(seen, [2, 4, 8, 1, 2])
 
 
 if __name__ == "__main__":

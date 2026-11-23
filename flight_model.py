@@ -19,12 +19,31 @@ class Aircraft:
     max_thrust: float
     max_speed: float
     landing_speed: float
+    engines: int = 2
+    supersonic: bool = False
+    datum: float = 3.3  # fuselage axis height above the ground on its wheels
+    lift_slope: float = 4.8  # lift coefficient per radian of angle of attack
+    zero_lift: float = 0.3
+    stall_angle: float = 16  # degrees
+    cl_max: float = 1.5
+    drag_base: float = 0.03
+    drag_induced: float = 0.055
+    max_pitch: float = 30  # degrees; attitude limit
+    tail_strike_angle: float = 11.5  # pitch at which the rear fuselage scrapes
+    bank_limit: float = 9  # bank at which a wingtip or engine pod touches down
 
 
 AIRCRAFT = (
-    Aircraft("Cessna 172 Skyhawk", 1110, 16.2, 2500, 84, 40),
+    Aircraft("Cessna 172 Skyhawk", 1110, 16.2, 2500, 84, 40, engines=1, datum=1.5,
+             tail_strike_angle=15, bank_limit=15),
     Aircraft("Boeing 737-800", 65000, 124.6, 242000, 250, 85),
     Aircraft("Airbus A320", 64000, 122.6, 240000, 250, 85),
+    # Four Olympus 593 engines (about 677 kN with reheat), 358 m2 ogival delta
+    # wing. Low lift slope but a very high stall angle; Mach 2.04 at altitude.
+    Aircraft("Concorde", 120000, 358.25, 677000, 650, 92, engines=4,
+             supersonic=True, datum=3.9, lift_slope=2.2, zero_lift=0.1,
+             stall_angle=28, cl_max=1.1, drag_base=0.010, drag_induced=0.15,
+             max_pitch=18, tail_strike_angle=13, bank_limit=7),
 )
 
 
@@ -68,8 +87,34 @@ AIRPORTS = (
 )
 
 
+# Damage kind -> (warning label, extra rolling drag in g, prevents flight).
+DAMAGE = {
+    "tyres": ("Tyres burst", 0.15, False),
+    "gear": ("Landing gear collapsed", 0.45, True),
+    "nose_gear": ("Nose gear collapsed", 0.4, True),
+    "belly": ("Gear not down: belly landing", 0.5, True),
+    "terrain": ("Off-runway landing: gear torn by rough ground", 0.45, True),
+    "wing": ("Wing strike", 0.25, True),
+    "tail": ("Tail strike", 0.03, False),
+}
+
+
 def clamp(value, low, high):
     return max(low, min(high, value))
+
+
+LOOK_PITCH_LIMIT = 80
+TIME_SCALES = (1, 2, 4, 8)
+
+
+def clamp_look(yaw, pitch):
+    """Wrap a look-around yaw to [-180, 180) degrees and limit pitch to +-80."""
+    return (yaw + 180) % 360 - 180, clamp(pitch, -LOOK_PITCH_LIMIT, LOOK_PITCH_LIMIT)
+
+
+def next_time_scale(scale):
+    """Fast-forward cycle: 1x, 2x, 4x, 8x, then back to 1x."""
+    return TIME_SCALES[(TIME_SCALES.index(scale) + 1) % len(TIME_SCALES)]
 
 
 class Flight:
@@ -106,6 +151,11 @@ class Flight:
         self.on_ground = True
         self.has_flown = False
         self.crashed = self.completed = self.stalled = False
+        self.damage_kinds = []
+        self.drag_damage = 0.0
+        self.unflyable = False
+        self.veer = 1
+        self.assess_at_rest = False
         self.message = "Ready: add throttle, build speed, then gently raise the nose."
 
     @property
@@ -133,6 +183,27 @@ class Flight:
     @property
     def retractable_gear(self):
         return self.aircraft != AIRCRAFT[0]
+
+    @property
+    def damage(self):
+        """Warning text for each kind of damage the aircraft has suffered."""
+        wing = "Wing/engine pod strike" if self.aircraft.engines > 1 else "Wing strike"
+        return [wing if kind == "wing" else DAMAGE[kind][0] for kind in self.damage_kinds]
+
+    def _add_damage(self, kind):
+        if kind not in self.damage_kinds:
+            self.damage_kinds.append(kind)
+            _, drag, grounded = DAMAGE[kind]
+            self.drag_damage += drag
+            self.unflyable = self.unflyable or grounded
+
+    def _damage_message(self, prefix):
+        return f"{prefix}: " + "; ".join(self.damage) + "."
+
+    @property
+    def mach(self):
+        # ISA: speed of sound falls to 295 m/s at the tropopause.
+        return self.airspeed / (340.3 - 4.5 * min(max(self.z, 0), 11000) / 1000)
 
     def toggle_gear(self):
         if self.crashed or self.completed:
@@ -169,9 +240,9 @@ class Flight:
         blend = 1 - math.exp(-dt / response)
         self.pitch_rate += (elevator * (6 if jet else 12) * authority - self.pitch_rate) * blend
         self.roll_rate += (aileron * (18 if jet else 35) * authority - self.roll_rate) * blend
-        self.pitch = clamp(self.pitch + self.pitch_rate * dt, -25, 30)
+        self.pitch = clamp(self.pitch + self.pitch_rate * dt, -25, self.aircraft.max_pitch)
         self.bank = clamp(self.bank + self.roll_rate * dt, -65, 65)
-        if self.pitch in (-25, 30):
+        if self.pitch in (-25, self.aircraft.max_pitch):
             self.pitch_rate = 0
         if self.bank in (-65, 65):
             self.roll_rate = 0
@@ -180,7 +251,12 @@ class Flight:
         turn = 0 if self.on_ground else math.degrees(
             G * math.tan(math.radians(self.bank)) / max(speed, 25))
         steer = min(self.ground_speed / 5, 1) if self.on_ground else 0.3
-        self.yaw_rate += (rudder * (7 if jet else 12) * steer - self.yaw_rate) * blend
+        pull = 0
+        if self.on_ground and self.damage_kinds:
+            # Damaged gear steers poorly and drags the aircraft to one side.
+            steer *= 0.2 if self.unflyable else 0.5 if "tyres" in self.damage_kinds else 1
+            pull = self.veer * 4 * min(self.ground_speed / 10, 1) * min(self.drag_damage * 3, 1)
+        self.yaw_rate += (rudder * (7 if jet else 12) * steer + pull - self.yaw_rate) * blend
         self.heading = (self.heading + (turn + self.yaw_rate) * dt) % 360
         heading, pitch, bank = map(math.radians, (self.heading, self.pitch, self.bank))
         fx, fy = math.sin(heading), math.cos(heading)
@@ -189,21 +265,37 @@ class Flight:
         horizontal = math.hypot(ax, ay)
         gamma = math.atan2(az, max(horizontal, 0.1))
         angle_of_attack = pitch - gamma
-        self.stalled = abs(angle_of_attack) > math.radians(16) and speed > 15
-        cl = clamp(0.3 + 4.8 * angle_of_attack, -1.2, 1.5)
+        craft = self.aircraft
+        self.stalled = abs(angle_of_attack) > math.radians(craft.stall_angle) and speed > 15
+        cl = clamp(craft.zero_lift + craft.lift_slope * angle_of_attack, -1.2, craft.cl_max)
         if self.stalled:
-            cl *= max(0.2, 1 - (abs(math.degrees(angle_of_attack)) - 16) / 30)
+            cl *= max(0.2, 1 - (abs(math.degrees(angle_of_attack)) - craft.stall_angle) / 30)
         density = 1.225 * math.exp(-max(self.z, 0) / 8500)
         pressure = 0.5 * density * speed * speed
         lift = pressure * self.aircraft.wing_area * cl
         gear_drag = 0.018 * self.gear if jet else 0.012
-        drag = pressure * self.aircraft.wing_area * (0.03 + gear_drag + 0.055 * cl * cl)
+        wave_drag = 0
+        if craft.supersonic:
+            # Transonic drag rise peaking near Mach 1.1, easing off supersonically.
+            mach = self.mach
+            wave_drag = (0.012 * clamp((mach - 0.85) / 0.25, 0, 1) if mach < 1.1
+                         else 0.006 + 0.006 * math.exp(-(mach - 1.1) * 1.5))
+        drag = pressure * craft.wing_area * (
+            craft.drag_base + gear_drag + wave_drag + craft.drag_induced * cl * cl)
         # Lift is perpendicular to air-relative motion; banking tilts it sideways.
         ux, uy = (ax / horizontal, ay / horizontal) if horizontal > 1 else (fx, fy)
         lx = -math.sin(gamma) * ux * math.cos(bank) + uy * math.sin(bank)
         ly = -math.sin(gamma) * uy * math.cos(bank) - ux * math.sin(bank)
         lz = math.cos(gamma) * math.cos(bank)
         thrust = self.engine_power * self.aircraft.max_thrust
+        if craft.supersonic:
+            # Dry thrust to 80% throttle, then afterburner (reheat) to full power.
+            power = self.engine_power
+            thrust = craft.max_thrust * (0.875 * power if power <= 0.8
+                                         else 0.7 + 1.5 * (power - 0.8))
+            # Thrust lapses with air density, but supersonic ram effect recovers
+            # much of it, so Mach 2 cruise remains possible.
+            thrust *= (density / 1.225) ** 0.6 * (1 + 0.45 * max(self.mach - 0.5, 0))
         mass = self.aircraft.mass
         accelerations = [
             (thrust * math.cos(pitch) * fx + lift * lx - drag * ax / max(speed, 0.1)) / mass,
@@ -213,11 +305,16 @@ class Flight:
         if self.on_ground:
             # Tyre grip prevents sideways skating in a crosswind.
             forward = self.vx * fx + self.vy * fy
-            rolling = min(abs(forward) / dt, (0.025 + 0.3 * bool(brake)) * G)
+            braking = 0.3 * bool(brake) * (0.5 if "tyres" in self.damage_kinds else 1)
+            rolling = min(abs(forward) / dt, (0.025 + braking + self.drag_damage) * G)
             along = accelerations[0] * fx + accelerations[1] * fy
             forward = max(0, forward + (along - rolling) * dt)
             self.vx, self.vy = forward * fx, forward * fy
-            self.vz = max(0, self.vz + accelerations[2] * dt)
+            self.vz = 0 if self.unflyable else max(0, self.vz + accelerations[2] * dt)
+            if (self.pitch > self.aircraft.tail_strike_angle and self.ground_speed > 10
+                    and "tail" not in self.damage_kinds):
+                self._add_damage("tail")
+                self.message = self._damage_message("WARNING — tail strike on rotation")
         else:
             self.vx += accelerations[0] * dt
             self.vy += accelerations[1] * dt
@@ -238,20 +335,59 @@ class Flight:
         if self.airspeed > self.aircraft.max_speed:
             self.crashed = True
             self.message = "Overspeed: the aircraft was damaged. Press R to try again."
+        elif (self.assess_at_rest and self.on_ground and self.ground_speed < 0.5
+                and not self.completed):
+            self.assess_at_rest = False
+            if self.destination.contains(self.x, self.y):
+                self.completed = True
+                self.message = self._damage_message("Arrived, but the aircraft is damaged")
+            elif self.unflyable:
+                self.message = self._damage_message(
+                    "Aircraft disabled, it cannot take off again. Press R to try again")
+            else:
+                self.message = self._damage_message("Stopped with damage, take-off is still possible")
 
     def _touchdown(self):
-        if self.gear < 0.99:
-            self.crashed = True
-            self.message = "Landing gear was not fully down. Press R to try again."
-            return
+        craft = self.aircraft
         runway = next((airport for airport in AIRPORTS if airport.contains(self.x, self.y)), None)
         alignment = 180 if runway is None else abs(
             (self.heading - runway.runway_heading + 90) % 180 - 90)
-        if (runway is None or self.vz < -3 or abs(self.bank) > 12
-                or not -5 <= self.pitch <= 15 or alignment > 15
-                or self.airspeed > self.aircraft.landing_speed):
+        sink, speed = -self.vz, self.airspeed
+        self.veer = 1 if self.bank >= 0 else -1
+        destroyed = None
+        if sink > 8:
+            destroyed = "Impact far too hard, the airframe broke up"
+        elif abs(self.bank) > 45:
+            destroyed = "A wing dug in and the aircraft cartwheeled"
+        elif alignment > 60 and runway is not None:
+            destroyed = "The aircraft slid sideways and rolled over"
+        elif runway is None and speed > craft.landing_speed * 1.5:
+            destroyed = "High-speed impact off the runway"
+        if self.gear < 0.99:
+            self._add_damage("belly")
+        else:
+            if sink > 5:
+                self._add_damage("gear")
+            if sink > 3 or speed > craft.landing_speed * 1.1 or 15 < alignment <= 30:
+                self._add_damage("tyres")
+            if 30 < alignment <= 60 and runway is not None:
+                self._add_damage("gear")
+            if self.pitch < -5:
+                self._add_damage("nose_gear")
+        if runway is None:
+            self._add_damage("terrain")
+        if abs(self.bank) > craft.bank_limit:
+            self._add_damage("wing")
+        if self.pitch > craft.tail_strike_angle:
+            self._add_damage("tail")
+        if destroyed:
             self.crashed = True
-            self.message = "Hard or off-runway landing. Press R to try again."
+            self.message = f"CRASH, {destroyed}. Press R to try again."
+            if self.damage_kinds:
+                self.message = self._damage_message(f"CRASH, {destroyed}. Damage") + " Press R to try again."
+        elif self.damage_kinds:
+            self.assess_at_rest = True
+            self.message = self._damage_message("WARNING, damage on landing")
         elif runway == self.destination:
             self.completed = True
             self.message = "Successful arrival! Press R for another flight or Esc to choose a route."

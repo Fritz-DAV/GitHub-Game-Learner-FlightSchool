@@ -1,7 +1,11 @@
 import {
-  AIRCRAFT, AIRPORTS, Flight, airportPosition, clamp,
+  AIRCRAFT, AIRPORTS, Flight, airportPosition, clamp, clampLook, nextTimeScale,
 } from "./flight-model.mjs";
-import { LAND_SURFACES, clipPolygon, heathrowScenery, regionalScenery, terrain } from "./scenery.mjs";
+import {
+  CITY_OUTLINES, COASTS, LAND_SURFACES, ROADS, THAMES, clipPolygon, coarseTerrain, geographic,
+  heathrowScenery, regionalScenery, terrain,
+} from "./scenery.mjs";
+import { cloudCover, cloudDrift, cloudSurfaces } from "./clouds.mjs";
 import { aircraftSurfaces } from "./aircraft-visuals.mjs";
 
 const london = heathrowScenery();
@@ -17,7 +21,13 @@ const gamePanel = $("#game");
 const form = $("#flight-form");
 const keys = new Set();
 const mouse = { x: 0, y: 0 };
-const state = { flight: null, external: false, paused: false, mouseEnabled: false };
+const state = {
+  flight: null, external: false, paused: false, mouseEnabled: false,
+  lookYaw: 0, lookPitch: 0, timeScale: 1, trail: [],
+};
+const LOOK_SENSITIVITY = 0.25; // degrees of look-around per dragged pixel
+const CLICK_SLOP = 4; // pixels of movement before a press becomes a drag
+let drag = null;
 const controls = {
   pause: $("#pause-button"),
   view: $("#view-button"),
@@ -25,6 +35,7 @@ const controls = {
   restart: $("#restart-button"),
   menu: $("#menu-button"),
   gear: $("#gear-button"),
+  speed: $("#speed-button"),
 };
 let width = 0;
 let height = 0;
@@ -51,6 +62,15 @@ function clearInput() {
   mouse.y = 0;
 }
 
+function resetView() {
+  state.lookYaw = state.lookPitch = 0;
+}
+
+function setTimeScale(scale) {
+  state.timeScale = scale;
+  controls.speed.textContent = `Speed: ${scale}x`;
+}
+
 function startFlight() {
   const aircraft = AIRCRAFT.find((item) => item.name === $("#aircraft").value);
   const departure = AIRPORTS.find((item) => item.code === $("#departure").value);
@@ -64,6 +84,10 @@ function startFlight() {
     windSpeed === 9 ? 225 : 270);
   state.external = false;
   state.paused = false;
+  state.trail = [];
+  resetView();
+  setTimeScale(1);
+  drag = null;
   controls.pause.textContent = "Pause";
   clearInput();
   $("#form-message").textContent = "";
@@ -81,6 +105,9 @@ function startFlight() {
 function showMenu() {
   state.flight = null;
   state.paused = false;
+  resetView();
+  setTimeScale(1);
+  drag = null;
   clearInput();
   gamePanel.hidden = true;
   setup.hidden = false;
@@ -100,6 +127,7 @@ form.addEventListener("submit", (event) => {
 controls.pause.addEventListener("click", () => setPaused(!state.paused));
 controls.view.addEventListener("click", () => setView(!state.external));
 controls.mouse.addEventListener("click", () => toggleMouseSteering());
+controls.speed.addEventListener("click", () => setTimeScale(nextTimeScale(state.timeScale)));
 controls.restart.addEventListener("click", () => startFlight());
 controls.menu.addEventListener("click", showMenu);
 controls.gear.addEventListener("click", () => {
@@ -108,6 +136,7 @@ controls.gear.addEventListener("click", () => {
 
 function setView(external) {
   state.external = external;
+  resetView();
   controls.view.textContent = external ? "Cockpit view" : "External view";
 }
 
@@ -120,7 +149,7 @@ function toggleMouseSteering() {
 window.addEventListener("keydown", (event) => {
   if (!state.flight || setup.hidden === false) return;
   const key = event.key.toLowerCase();
-  const handled = ["arrowup", "arrowdown", "arrowleft", "arrowright", " ", "+", "-", "=", "_", "pageup", "pagedown", "w", "a", "s", "d", "q", "e", "v", "1", "2", "m", "p", "r", "g", "l", "escape"];
+  const handled = ["arrowup", "arrowdown", "arrowleft", "arrowright", " ", "+", "-", "=", "_", "pageup", "pagedown", "w", "a", "s", "d", "q", "e", "v", "1", "2", "m", "p", "r", "g", "l", "f", "c", "escape"];
   if (handled.includes(key)) event.preventDefault();
   const wasDown = keys.has(key);
   keys.add(key);
@@ -131,6 +160,8 @@ window.addEventListener("keydown", (event) => {
   else if (key === "m") {
     toggleMouseSteering();
   } else if (key === "p") setPaused(!state.paused);
+  else if (key === "f") setTimeScale(nextTimeScale(state.timeScale));
+  else if (key === "c") resetView();
   else if (key === "g" && !state.paused) state.flight.toggleGear();
   else if (key === "l" && !state.paused) state.flight.lightsOn = !state.flight.lightsOn;
   else if (key === "r") startFlight();
@@ -138,20 +169,50 @@ window.addEventListener("keydown", (event) => {
 });
 
 window.addEventListener("keyup", (event) => keys.delete(event.key.toLowerCase()));
+// The game keeps running when the window loses focus; only held keys are
+// released so nothing stays stuck. A hidden tab pauses because browsers stop
+// animation frames there.
 window.addEventListener("blur", () => {
   if (state.flight && !gamePanel.hidden) {
     clearInput();
+    drag = null;
+  }
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && state.flight && !gamePanel.hidden) {
+    clearInput();
+    drag = null;
     setPaused(true);
   }
 });
 
+scene.addEventListener("pointerdown", (event) => {
+  if (!state.flight) return;
+  drag = { startX: event.clientX, startY: event.clientY, lastX: event.clientX, lastY: event.clientY, moved: false };
+  if (scene.setPointerCapture) scene.setPointerCapture(event.pointerId);
+});
 scene.addEventListener("pointermove", (event) => {
   if (state.flight && state.mouseEnabled) {
     const rect = scene.getBoundingClientRect();
     mouse.x = clamp((event.clientX - rect.left - rect.width / 2) / (rect.width * 0.35), -1, 1);
     mouse.y = clamp((rect.height / 2 - (event.clientY - rect.top)) / (rect.height * 0.35), -1, 1);
   }
+  if (!drag) return;
+  if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) <= CLICK_SLOP) return;
+  // Dragging grabs the world, as in a street-view panorama.
+  [state.lookYaw, state.lookPitch] = clampLook(
+    state.lookYaw - (event.clientX - drag.lastX) * LOOK_SENSITIVITY,
+    state.lookPitch + (event.clientY - drag.lastY) * LOOK_SENSITIVITY);
+  drag.lastX = event.clientX;
+  drag.lastY = event.clientY;
+  drag.moved = true;
 });
+scene.addEventListener("pointerup", (event) => {
+  const finished = drag;
+  drag = null;
+  if (finished && !finished.moved) cockpitClick(event);
+});
+scene.addEventListener("pointercancel", () => { drag = null; });
 scene.addEventListener("wheel", (event) => {
   if (state.flight && !state.paused) {
     event.preventDefault();
@@ -159,7 +220,7 @@ scene.addEventListener("wheel", (event) => {
   }
 }, { passive: false });
 
-scene.addEventListener("click", (event) => {
+function cockpitClick(event) {
   if (!state.flight || state.external || state.paused) return;
   const rect = scene.getBoundingClientRect();
   const x = (event.clientX - rect.left) / rect.width;
@@ -168,7 +229,7 @@ scene.addEventListener("click", (event) => {
   if (Math.abs(x - 0.69) < 0.045) state.flight.toggleGear();
   else if (Math.abs(x - 0.8) < 0.045) state.flight.lightsOn = !state.flight.lightsOn;
   else if (Math.abs(x - 0.91) < 0.045) toggleMouseSteering();
-});
+}
 
 const touchKeys = {
   left: "arrowleft",
@@ -238,9 +299,9 @@ function clipped(points) {
   for (const plane of viewPlanes()) result = clipPolygon(result, plane);
   return result;
 }
-function polygon(points, color) {
+function polygon(points, color, maxDepth = 50000) {
   const cameraPoints = points.map(cameraPoint);
-  if (cameraPoints.every((p) => p[2] < 1) || cameraPoints.every((p) => p[2] > 50000)) return;
+  if (cameraPoints.every((p) => p[2] < 1) || cameraPoints.every((p) => p[2] > maxDepth)) return;
   const projectedPoints = clipped(cameraPoints);
   if (projectedPoints.length < 3) return;
   context.beginPath();
@@ -344,7 +405,7 @@ function drawPlane(flight) {
     return [
       flight.x + across * Math.cos(heading) + along * Math.sin(heading),
       flight.y - across * Math.sin(heading) + along * Math.cos(heading),
-      flight.z + (flight.aircraft === AIRCRAFT[0] ? 1.5 : 3.3) + up,
+      flight.z + flight.aircraft.datum + up,
     ];
   };
   return aircraftSurfaces(flight.aircraft, flight.gear, flight.time, flight.enginePower)
@@ -352,22 +413,31 @@ function drawPlane(flight) {
 }
 
 function setCamera(flight) {
-  const heading = flight.heading * Math.PI / 180;
+  let heading = flight.heading * Math.PI / 180;
+  let yaw = state.lookYaw * Math.PI / 180;
+  let lookPitch = state.lookPitch * Math.PI / 180;
   let pitch;
   let bank;
   let eye;
   if (state.external) {
-    const distance = flight.aircraft === AIRCRAFT[0] ? 32 : 85;
-    const heightAbove = flight.aircraft === AIRCRAFT[0] ? 11 : 28;
+    const [distance, heightAbove] = flight.aircraft === AIRCRAFT[0] ? [32, 11]
+      : flight.aircraft.supersonic ? [120, 36] : [85, 28];
+    // Orbit the aircraft; the default elevation keeps the original -12 degree view.
+    const base = Math.atan2(heightAbove, distance);
+    const elevation = clamp(base + lookPitch, -80 * Math.PI / 180, 80 * Math.PI / 180);
+    const azimuth = heading + yaw;
+    const radius = Math.hypot(distance, heightAbove);
     eye = [
-      flight.x - Math.sin(heading) * distance,
-      flight.y - Math.cos(heading) * distance,
-      flight.z + heightAbove,
+      flight.x - Math.sin(azimuth) * Math.cos(elevation) * radius,
+      flight.y - Math.cos(azimuth) * Math.cos(elevation) * radius,
+      flight.z + Math.sin(elevation) * radius,
     ];
-    pitch = -12 * Math.PI / 180;
+    heading = azimuth;
+    pitch = base - 12 * Math.PI / 180 - elevation;
     bank = 0;
+    yaw = lookPitch = 0;
   } else {
-    eye = [flight.x, flight.y, flight.z + (flight.aircraft === AIRCRAFT[0] ? 2 : 5)];
+    eye = [flight.x, flight.y, flight.z + (flight.aircraft === AIRCRAFT[0] ? 2 : flight.aircraft.supersonic ? 6 : 5)];
     pitch = flight.pitch * Math.PI / 180;
     bank = flight.bank * Math.PI / 180;
   }
@@ -382,20 +452,47 @@ function setCamera(flight) {
     Math.cos(heading) * Math.cos(pitch),
     Math.sin(pitch),
   ];
+  const rightB = right.map((value, i) => value * Math.cos(bank) - up[i] * Math.sin(bank));
+  const upB = up.map((value, i) => value * Math.cos(bank) + right[i] * Math.sin(bank));
+  // Turn the head: yaw about the camera's up axis, then pitch about its right axis.
+  const yawed = forward.map((value, i) => value * Math.cos(yaw) + rightB[i] * Math.sin(yaw));
+  const rightYawed = rightB.map((value, i) => value * Math.cos(yaw) - forward[i] * Math.sin(yaw));
   camera = {
     eye,
-    right: right.map((value, i) => value * Math.cos(bank) - up[i] * Math.sin(bank)),
-    up: up.map((value, i) => value * Math.cos(bank) + right[i] * Math.sin(bank)),
-    forward,
+    right: rightYawed,
+    up: upB.map((value, i) => value * Math.cos(lookPitch) - yawed[i] * Math.sin(lookPitch)),
+    forward: yawed.map((value, i) => value * Math.cos(lookPitch) + upB[i] * Math.sin(lookPitch)),
     pitch,
     bank,
   };
 }
 
+// Blend the distance into the sky along the (possibly banked) horizon line.
+function drawHaze() {
+  const right = camera.right[2];
+  const up = camera.up[2];
+  const norm = Math.hypot(right, up);
+  if (norm < 1e-3) return;
+  const normal = [-right / norm, up / norm];
+  const below = -camera.forward[2] * focal / norm;
+  const horizon = [width / 2 - normal[0] * below, height / 2 - normal[1] * below];
+  const upBand = height * 0.08;
+  const downBand = height * 0.24;
+  const gradient = context.createLinearGradient(
+    horizon[0] - normal[0] * upBand, horizon[1] - normal[1] * upBand,
+    horizon[0] + normal[0] * downBand, horizon[1] + normal[1] * downBand);
+  gradient.addColorStop(0, "rgba(224,233,221,0)");
+  gradient.addColorStop(upBand / (upBand + downBand), "rgba(224,233,221,0.8)");
+  gradient.addColorStop(1, "rgba(224,233,221,0)");
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, width, height);
+}
+
 function drawScene(flight) {
   context.clearRect(0, 0, width, height);
   const sky = context.createLinearGradient(0, 0, 0, height);
-  sky.addColorStop(0, "#83bfdc");
+  sky.addColorStop(0, "#5f9fcf");
+  sky.addColorStop(0.55, "#a5cde6");
   sky.addColorStop(1, "#e0e9dd");
   context.fillStyle = sky;
   context.fillRect(0, 0, width, height);
@@ -415,7 +512,13 @@ function drawScene(flight) {
   context.fill();
   const { ground, solids: trees } = terrain(flight.x, flight.y);
   const solids = [...trees];
-  for (const [points, color] of [...LAND_SURFACES, ...ground, ...region.ground, ...london.ground]) polygon(points, color);
+  // Land is drawn at any distance so the coast stays continuous out to the horizon.
+  for (const [points, color] of LAND_SURFACES) polygon(points, color, Infinity);
+  const altitudeCells = clamp(Math.round(10 + flight.z / 1500), 10, 22);
+  for (const [points, color] of coarseTerrain(flight.x, flight.y, altitudeCells)) polygon(points, color, 120000);
+  for (const [points, color] of ground) polygon(points, color);
+  for (const [points, color] of region.ground) polygon(points, color, 90000);
+  for (const [points, color] of london.ground) polygon(points, color);
   [...AIRPORTS]
     .map((airport) => [airport, Math.hypot(...airportPosition(airport).map((value, index) => value - [flight.x, flight.y][index]))])
     .filter(([, distance]) => distance < 50000)
@@ -423,11 +526,13 @@ function drawScene(flight) {
     .forEach(([airport]) => runway(airport));
   if (state.external) solids.push(...drawPlane(flight));
   solids.push(...london.solids);
-  solids.push(...region.solids.filter(([points]) => points.some(
-    (p) => Math.hypot(p[0] - flight.x, p[1] - flight.y) < 40000)));
+  solids.push(...region.solids.filter(([points, , far]) => points.some(
+    (p) => Math.hypot(p[0] - flight.x, p[1] - flight.y) < (far ? 110000 : 40000))));
+  solids.push(...cloudSurfaces([camera.eye[0], camera.eye[1], camera.eye[2]], cloudDrift(flight)));
   const depth = ([points]) => points.reduce((sum, p) => sum + cameraPoint(p)[2], 0) / points.length;
   const ordered = solids.map((surface) => [surface, depth(surface)]).sort((a, b) => b[1] - a[1]);
-  for (const [[points, color]] of ordered) polygon(points, color);
+  for (const [[points, color, far]] of ordered) polygon(points, color, far ? 120000 : 60000);
+  drawHaze();
   if (!state.external) {
     drawCockpit(flight);
   }
@@ -504,7 +609,7 @@ function drawCockpit(flight) {
   context.fillStyle = "#111a21";
   context.fillRect(gx - width * 0.007, gy - ph * 0.1, width * 0.014, ph * 0.14);
   circle(gx, gy - ph * 0.07, 2, "#d95746");
-  for (let i = 0; i < (flight.aircraft === AIRCRAFT[0] ? 1 : 2); i += 1) {
+  for (let i = 0; i < flight.aircraft.engines; i += 1) {
     const tx = width * (0.59 + i * 0.018);
     context.fillStyle = "#0c141b";
     context.fillRect(tx - 3, top + ph * 0.13, 6, ph * 0.66);
@@ -533,44 +638,106 @@ function drawMap(flight) {
   const rect = map.getBoundingClientRect();
   const w = rect.width;
   const h = rect.height;
+  const destination = airportPosition(flight.destination);
+  const route = [airportPosition(flight.departure), destination, [flight.x, flight.y]];
+  const xs = route.map((p) => p[0]);
+  const ys = route.map((p) => p[1]);
+  const centre = [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2];
+  const spanX = Math.max(Math.max(...xs) - Math.min(...xs), 60000) * 1.4;
+  const spanY = Math.max(Math.max(...ys) - Math.min(...ys), 60000 * h / w) * 1.4;
+  const scale = Math.min(w / spanX, h / spanY);
+  const point = ([x, y]) => [w / 2 + (x - centre[0]) * scale, h / 2 - (y - centre[1]) * scale];
+  const trace = (points) => {
+    mapContext.beginPath();
+    points.forEach((p, i) => (i === 0 ? mapContext.moveTo(...p) : mapContext.lineTo(...p)));
+  };
+  const fillClipped = (points, color) => {
+    let shape = points;
+    for (const edge of [(p) => p[0], (p) => w - p[0], (p) => p[1], (p) => h - p[1]]) shape = clipPolygon(shape, edge);
+    if (shape.length < 3) return;
+    trace(shape);
+    mapContext.closePath();
+    mapContext.fillStyle = color;
+    mapContext.fill();
+  };
   mapContext.clearRect(0, 0, w, h);
-  mapContext.fillStyle = "#192d39";
+  mapContext.fillStyle = "#2c5f7a";
   mapContext.fillRect(0, 0, w, h);
-  const positions = AIRPORTS.map(airportPosition).concat([[flight.x, flight.y]]);
-  const xs = positions.map((point) => point[0]);
-  const ys = positions.map((point) => point[1]);
-  const xmin = Math.min(...xs);
-  const xmax = Math.max(...xs);
-  const ymin = Math.min(...ys);
-  const ymax = Math.max(...ys);
-  const scale = Math.min((w - 40) / Math.max(xmax - xmin, 1), (h - 40) / Math.max(ymax - ymin, 1));
-  const point = ([x, y]) => [
-    w / 2 + (x - (xmin + xmax) / 2) * scale,
-    h / 2 - (y - (ymin + ymax) / 2) * scale,
-  ];
+  const coasts = COASTS.map((coast) => coast.map((p) => point(geographic(...p))));
+  mapContext.lineJoin = "round";
+  mapContext.lineWidth = 5;
+  mapContext.strokeStyle = "#3b7a93";
+  for (const coast of coasts) {
+    trace(coast);
+    mapContext.closePath();
+    mapContext.stroke();
+  }
+  for (const coast of coasts) fillClipped(coast, "#78915f");
+  for (const city of CITY_OUTLINES) fillClipped(city.points.map(point), "#aaa99a");
+  mapContext.lineWidth = 1.5;
+  mapContext.strokeStyle = "#4f93ad";
+  const [hx, hy] = airportPosition(AIRPORTS[0]);
+  trace(THAMES.map(([x, y]) => point([hx + x, hy + y])));
+  mapContext.stroke();
+  mapContext.lineWidth = 1;
+  mapContext.strokeStyle = "#d6b45a";
+  for (const [name, roadPoints] of ROADS) {
+    if (!name.startsWith("M")) continue;
+    trace(roadPoints.map((p) => point(geographic(...p))));
+    mapContext.stroke();
+  }
+  const drift = cloudDrift(flight);
+  const cell = Math.max(w / 22, 5);
+  for (let x = cell / 2; x < w; x += cell) {
+    for (let y = cell / 2; y < h; y += cell) {
+      const cover = cloudCover(centre[0] + (x - w / 2) / scale, centre[1] - (y - h / 2) / scale, drift);
+      if (cover < 0.47) continue;
+      mapContext.fillStyle = `rgba(255,255,255,${Math.min(0.55, (cover - 0.45) * 3).toFixed(2)})`;
+      mapContext.beginPath();
+      mapContext.arc(x, y, cell * 0.75, 0, Math.PI * 2);
+      mapContext.fill();
+    }
+  }
+  if (state.trail.length > 1) {
+    mapContext.strokeStyle = "#ffd9a0";
+    trace(state.trail.map(point));
+    mapContext.stroke();
+  }
   mapContext.setLineDash([4, 4]);
-  mapContext.strokeStyle = "#e2bb53";
-  mapContext.beginPath();
-  mapContext.moveTo(...point(airportPosition(flight.departure)));
-  mapContext.lineTo(...point(airportPosition(flight.destination)));
+  mapContext.strokeStyle = "#f2d16b";
+  trace([point(route[0]), point(destination)]);
   mapContext.stroke();
   mapContext.setLineDash([]);
+  mapContext.font = "9px system-ui";
+  mapContext.textAlign = "center";
   for (const airport of AIRPORTS) {
     const [x, y] = point(airportPosition(airport));
-    mapContext.fillStyle = "#fff";
+    const target = airport === flight.destination;
+    mapContext.fillStyle = target ? "#f2d16b" : "#fff";
     mapContext.beginPath();
-    mapContext.arc(x, y, 3, 0, Math.PI * 2);
+    mapContext.arc(x, y, target ? 4 : 3, 0, Math.PI * 2);
     mapContext.fill();
     mapContext.fillStyle = "#fff";
-    mapContext.font = "9px system-ui";
-    mapContext.textAlign = "center";
     mapContext.fillText(airport.code, x, y - 7);
   }
+  const heading = flight.heading * Math.PI / 180;
+  const forward = [Math.sin(heading), -Math.cos(heading)];
+  const side = [Math.cos(heading), Math.sin(heading)];
   const [x, y] = point([flight.x, flight.y]);
+  const at = (f, s) => [x + forward[0] * f + side[0] * s, y + forward[1] * f + side[1] * s];
+  trace([at(9, 0), at(-5, 6), at(-2, 0), at(-5, -6)]);
+  mapContext.closePath();
   mapContext.fillStyle = "#ff8b38";
-  mapContext.beginPath();
-  mapContext.arc(x, y, 4, 0, Math.PI * 2);
   mapContext.fill();
+  mapContext.lineWidth = 1;
+  mapContext.strokeStyle = "#fff";
+  mapContext.stroke();
+  const remaining = flight.navigation[0];
+  const label = remaining < 2000 ? `${Math.round(remaining)} m` : `${(remaining / 1000).toFixed(1)} km`;
+  mapContext.fillStyle = "rgba(8,18,24,0.8)";
+  mapContext.fillRect(0, h - 16, w, 16);
+  mapContext.fillStyle = "#f4e3b0";
+  mapContext.fillText(`${flight.destination.code} runway: ${label}`, w / 2, h - 5);
 }
 
 function formatTelemetry(flight) {
@@ -587,8 +754,12 @@ function formatTelemetry(flight) {
       : flight.crashed ? "FLIGHT ENDED — press R to retry"
         : flight.stalled ? "STALL — lower the nose"
           : flight.airspeed > flight.aircraft.maxSpeed * 0.9 ? "OVERSPEED — reduce throttle" : "";
-  $("#status-chip").textContent = warning || `${flight.aircraft.name} · ${flight.departure.code} → ${flight.destination.code} · ${state.external ? "External" : "Cockpit"}`;
+  const speedTag = state.timeScale > 1 ? ` · ▶▶ ${state.timeScale}x` : "";
+  $("#status-chip").textContent = (warning || `${flight.aircraft.name} · ${flight.departure.code} → ${flight.destination.code} · ${state.external ? "External" : "Cockpit"}`) + speedTag;
   $("#status-chip").classList.toggle("warning", Boolean(warning));
+  // Damage labels are fixed strings from the flight model, so they are safe as HTML.
+  $("#damage-alerts").innerHTML = flight.damage
+    .map((text) => `<div class="damage-alert">⚠ ${text.toUpperCase()}</div>`).join("");
 }
 
 function axis(positive, negative) {
@@ -609,7 +780,21 @@ function frame(now) {
         aileron += mouse.x;
         elevator += mouse.y;
       }
-      flight.update(dt, elevator, aileron, axis(["e"], ["q"]), keys.has(" "));
+      const rudder = axis(["e"], ["q"]);
+      // Several normal-sized steps per frame speed the simulation up without
+      // dropping time to the model's per-update limit.
+      for (let i = 0; i < state.timeScale; i += 1) {
+        flight.update(dt, elevator, aileron, rudder, keys.has(" "));
+        if (flight.crashed || flight.completed) {
+          setTimeScale(1);
+          break;
+        }
+      }
+    }
+    const last = state.trail[state.trail.length - 1];
+    if (!last || Math.hypot(flight.x - last[0], flight.y - last[1]) > 150) {
+      state.trail.push([flight.x, flight.y]);
+      if (state.trail.length > 500) state.trail.shift();
     }
     drawScene(flight);
     drawMap(flight);
