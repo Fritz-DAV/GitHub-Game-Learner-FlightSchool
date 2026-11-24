@@ -20,16 +20,19 @@ Thames east toward central London (about 25 km) to find bridges, the London Eye
 and a Westminster-style tower.
 
 The browser edition also has 3D shaded cumulus and a broken high cloud layer that
-drift with the wind, plus a haze band that keeps land and sea continuous out to the
-horizon at any altitude. Cities and towns follow hand-simplified built-up outlines
+drift with the wind, plus optional fog (the Visibility menu: Clear, Random ≈20% foggy, or Foggy);
+clear flights keep a crisp horizon. The Time of day menu (Day, Night, Random)
+adds a night mode with a dark sky, stars, lit towns and cities, sodium-lit
+motorways, runway/approach lights and aircraft navigation lights and strobes. Cities and towns follow hand-simplified built-up outlines
 (London along the Thames, compact Paris, road- and coast-aligned towns) rather than
 circles. The top-right map shows coastlines, the Thames, motorways, city areas, cloud
 cover, your track and heading, and the distance to the destination runway.
 
 Aircraft have metre-scale fuselages, cockpit/cabin glazing, wings, tails and
 visible wheels. The Cessna has a high wing, struts, propeller and fixed gear;
-the 737 and A320 have swept wings, distinct noses/nacelles, winglets and
-retractable twin-wheel gear. The wider cockpit view includes moving instrument
+the 737, A320 and Concorde have round tapered fuselages, rows of small cabin
+windows, cockpit windscreens, swept wings (the Concorde an ogival delta with
+a drooped nose), correctly sized engine nacelles, winglets and retractable gear. The wider cockpit view includes moving instrument
 needles, a joystick following pitch/bank inputs, throttle levers, buttons and
 status lamps. Twin jet levers move together with commanded throttle; the power
 readout follows actual engine spool, which deliberately lags the levers.

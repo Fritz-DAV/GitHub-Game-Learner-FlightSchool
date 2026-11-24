@@ -45,6 +45,20 @@
               <option value="9">Breezy southwesterly — 9 m/s</option>
             </select>
           </label>
+          <label>Visibility
+            <select id="visibility">
+              <option value="random" selected>Random (mostly clear)</option>
+              <option value="clear">Clear</option>
+              <option value="foggy">Foggy</option>
+            </select>
+          </label>
+          <label>Time of day
+            <select id="time-of-day">
+              <option value="day" selected>Day</option>
+              <option value="night">Night</option>
+              <option value="random">Random</option>
+            </select>
+          </label>
           <p id="form-message" class="form-message" role="alert"></p>
           <button class="primary" type="submit">Start flight</button>
         </form>

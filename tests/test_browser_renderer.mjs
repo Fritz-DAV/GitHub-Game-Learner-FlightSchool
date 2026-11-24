@@ -9,7 +9,7 @@ test("distinct aircraft have representative spans, ground-level wheels and retra
     const up = aircraftSurfaces(aircraft, 0);
     const points = down.flatMap(([p]) => p);
     const span = Math.max(...points.map((p) => p[0])) - Math.min(...points.map((p) => p[0]));
-    assert.ok(Math.abs(span - [11, 36.5, 36.5, 25.6][i]) < 1e-8);
+    assert.ok(Math.abs(span - [11, 35.8, 35.8, 25.6][i]) < 1e-8);
     const length = Math.max(...points.map((p) => p[1])) - Math.min(...points.map((p) => p[1]));
     assert.ok(Math.abs(length - [8.3, 39.5, 37.6, 61.7][i]) < 0.1);
     const wheels = (mesh) => mesh.filter(([, color]) => color === "#20272c").flatMap(([p]) => p);
@@ -23,6 +23,23 @@ test("distinct aircraft have representative spans, ground-level wheels and retra
     return down;
   });
   assert.notDeepEqual(meshes[1], meshes[2]);
+});
+
+test("airliners have a row of small cabin windows, cockpit glazing and realistically sized engines", () => {
+  for (const aircraft of AIRCRAFT.slice(1, 3)) {
+    const mesh = aircraftSurfaces(aircraft, 1);
+    const side = (x) => (p) => p[0] * x > 0;
+    const windows = mesh.filter(([points, color]) => color === "#284e64" && points.every(side(1)));
+    assert.ok(windows.length >= 40);
+    for (const [points] of windows) {
+      const ys = points.map((p) => p[1]);
+      assert.ok(Math.max(...ys) - Math.min(...ys) < 0.4);
+    }
+    assert.ok(mesh.filter(([, color]) => color === "#14232d").length >= 6);
+    const fan = mesh.find(([points, color]) => color === "#24333c" && points[0][0] > 0);
+    const width = Math.max(...fan[0].map((p) => p[0])) - Math.min(...fan[0].map((p) => p[0]));
+    assert.ok(width > 1.4 && width < 2.1);
+  }
 });
 
 test("damaged landing gear and tyres change the aircraft model", () => {
@@ -165,6 +182,20 @@ test("browser UI renders every aircraft and route in both views without off-scre
     };
     const pointer = (name, x, y) => get("#scene").events[name]({ clientX: x, clientY: y, pointerId: 1 });
     const speedText = () => get("#airspeed").textContent;
+    // Night and fog render in both views; clear day draws no haze or lights.
+    for (const [visibility, time] of [["foggy", "night"], ["clear", "night"], ["clear", "day"]]) {
+      get("#visibility").value = visibility;
+      get("#time-of-day").value = time;
+      startFlight(AIRCRAFT[1]);
+      for (const view of ["1", "2"]) {
+        key(view);
+        polygons = 0;
+        frame(performance.now());
+        assert.ok(polygons > 20, `${visibility} ${time} view ${view}`);
+      }
+    }
+    get("#visibility").value = "clear";
+    get("#time-of-day").value = "day";
     startFlight(AIRCRAFT[1]);
     for (const view of ["1", "2"]) {
       key(view);

@@ -6,7 +6,10 @@ import {
   heathrowScenery, regionalScenery, terrain,
 } from "./scenery.mjs";
 import { cloudCover, cloudDrift, cloudSurfaces } from "./clouds.mjs";
-import { aircraftSurfaces } from "./aircraft-visuals.mjs";
+import { aircraftLights, aircraftSurfaces } from "./aircraft-visuals.mjs";
+import {
+  LIGHT_COLORS, STARS, hazeSettings, nightColor, nightLights, resolveFog, resolveNight, skyStops,
+} from "./environment.mjs";
 import { drawAltitudeChart, drawSummaryMap, formatDistance, formatDuration } from "./summary.mjs";
 
 const london = heathrowScenery();
@@ -25,6 +28,7 @@ const mouse = { x: 0, y: 0 };
 const state = {
   flight: null, external: false, paused: false, mouseEnabled: false,
   lookYaw: 0, lookPitch: 0, timeScale: 1, trail: [], summaryShown: false,
+  environment: { foggy: false, night: false },
 };
 const summaryPanel = $("#summary");
 const LOOK_SENSITIVITY = 0.25; // degrees of look-around per dragged pixel
@@ -84,6 +88,10 @@ function startFlight() {
   const windSpeed = Number($("#weather").value);
   state.flight = new Flight(aircraft, departure, destination, windSpeed,
     windSpeed === 9 ? 225 : 270);
+  state.environment = {
+    foggy: resolveFog($("#visibility").value),
+    night: resolveNight($("#time-of-day").value),
+  };
   state.external = false;
   state.paused = false;
   state.trail = [];
@@ -336,6 +344,7 @@ function clipped(points) {
   for (const plane of viewPlanes()) result = clipPolygon(result, plane);
   return result;
 }
+const shade = (color) => (state.environment.night ? nightColor(color) : color);
 function polygon(points, color, maxDepth = 50000) {
   const cameraPoints = points.map(cameraPoint);
   if (cameraPoints.every((p) => p[2] < 1) || cameraPoints.every((p) => p[2] > maxDepth)) return;
@@ -348,7 +357,7 @@ function polygon(points, color, maxDepth = 50000) {
     else context.lineTo(x, y);
   });
   context.closePath();
-  context.fillStyle = color;
+  context.fillStyle = shade(color);
   context.fill();
 }
 function groundLine(first, second, color, lineWidth = 1) {
@@ -370,7 +379,7 @@ function groundLine(first, second, color, lineWidth = 1) {
   context.beginPath();
   context.moveTo(x1, y1);
   context.lineTo(x2, y2);
-  context.strokeStyle = color;
+  context.strokeStyle = shade(color);
   context.lineWidth = lineWidth;
   context.stroke();
 }
@@ -426,7 +435,7 @@ function runwaySurface(airport) {
     }
   }
 }
-function drawPlane(flight) {
+function planeTransform(flight) {
   const heading = flight.heading * Math.PI / 180;
   const pitch = flight.pitch * Math.PI / 180;
   const bank = flight.bank * Math.PI / 180;
@@ -448,8 +457,75 @@ function drawPlane(flight) {
       flight.z + flight.aircraft.datum + up,
     ];
   };
+  return world;
+}
+
+function drawPlane(flight) {
+  const world = planeTransform(flight);
   return aircraftSurfaces(flight.aircraft, flight.gear, flight.time, flight.enginePower, flight.damageKinds)
     .map(([points, color]) => [points.map(world), color]);
+}
+
+function glow(point, color, radius, alpha = 1) {
+  const p = cameraPoint(point);
+  if (p[2] < 1) return;
+  const [x, y] = project(p);
+  const size = Math.max(1.2, focal * radius / p[2]);
+  context.globalAlpha = alpha * 0.35;
+  context.fillStyle = color;
+  context.beginPath();
+  context.arc(x, y, size * 2.2, 0, Math.PI * 2);
+  context.fill();
+  context.globalAlpha = alpha;
+  context.beginPath();
+  context.arc(x, y, size, 0, Math.PI * 2);
+  context.fill();
+  context.globalAlpha = 1;
+}
+
+function drawStars() {
+  for (const { dir, bright } of STARS) {
+    const p = [dot(dir, camera.right), dot(dir, camera.up), dot(dir, camera.forward)];
+    if (p[2] < 0.05) continue;
+    const [x, y] = project(p);
+    context.fillStyle = `rgba(255,255,255,${bright * (state.environment.foggy ? 0.3 : 1)})`;
+    context.fillRect(x, y, bright > 0.8 ? 2 : 1, bright > 0.8 ? 2 : 1);
+  }
+}
+
+// City, motorway and runway lights, drawn under solids so buildings and clouds hide them.
+function drawNightLights() {
+  const lights = nightLights();
+  const limit = state.environment.foggy ? 9000 : 90000;
+  const [ex, ey, ez] = camera.eye;
+  const [fx, fy, fz] = camera.forward;
+  let colour = -1;
+  for (const [x, y, z, index, size] of lights) {
+    const dx = x - ex;
+    const dy = y - ey;
+    const depth = dx * fx + dy * fy + (z - ez) * fz;
+    if (depth < 5 || depth > limit) continue;
+    const sx = width / 2 + focal * (dx * camera.right[0] + dy * camera.right[1] + (z - ez) * camera.right[2]) / depth;
+    if (sx < -10 || sx > width + 10) continue;
+    const sy = height / 2 - focal * (dx * camera.up[0] + dy * camera.up[1] + (z - ez) * camera.up[2]) / depth;
+    if (sy < -10 || sy > height + 10) continue;
+    if (index !== colour) {
+      colour = index;
+      context.fillStyle = LIGHT_COLORS[index];
+    }
+    const radius = Math.min(6, Math.max(0.8, focal * size * 0.5 / depth));
+    context.globalAlpha = Math.max(0.35, 1 - depth / limit);
+    context.fillRect(sx - radius / 2, sy - radius / 2, radius, radius);
+  }
+  context.globalAlpha = 1;
+}
+
+function drawAircraftLights(flight) {
+  const world = planeTransform(flight);
+  for (const [point, color, radius] of aircraftLights(flight.aircraft, flight.time)) {
+    glow(world(point), color, radius);
+  }
+  glow(world([0, flight.aircraft.supersonic ? 22 : 8, -0.8]), "#ffffff", 0.9, 0.9);
 }
 
 function setCamera(flight) {
@@ -507,23 +583,27 @@ function setCamera(flight) {
   };
 }
 
-// Blend the distance into the sky along the (possibly banked) horizon line.
+// Fog blends the distance into the sky along the (possibly banked) horizon line.
 function drawHaze() {
+  const haze = hazeSettings(state.environment);
+  if (!haze) return;
   const right = camera.right[2];
   const up = camera.up[2];
   const norm = Math.hypot(right, up);
+  context.fillStyle = `rgba(${haze.rgb},${haze.veil})`;
+  context.fillRect(0, 0, width, height);
   if (norm < 1e-3) return;
   const normal = [-right / norm, up / norm];
   const below = -camera.forward[2] * focal / norm;
   const horizon = [width / 2 - normal[0] * below, height / 2 - normal[1] * below];
-  const upBand = height * 0.08;
-  const downBand = height * 0.24;
+  const upBand = height * haze.up;
+  const downBand = height * haze.down;
   const gradient = context.createLinearGradient(
     horizon[0] - normal[0] * upBand, horizon[1] - normal[1] * upBand,
     horizon[0] + normal[0] * downBand, horizon[1] + normal[1] * downBand);
-  gradient.addColorStop(0, "rgba(224,233,221,0)");
-  gradient.addColorStop(upBand / (upBand + downBand), "rgba(224,233,221,0.8)");
-  gradient.addColorStop(1, "rgba(224,233,221,0)");
+  gradient.addColorStop(0, `rgba(${haze.rgb},0)`);
+  gradient.addColorStop(upBand / (upBand + downBand), `rgba(${haze.rgb},${haze.alpha})`);
+  gradient.addColorStop(1, `rgba(${haze.rgb},0)`);
   context.fillStyle = gradient;
   context.fillRect(0, 0, width, height);
 }
@@ -531,12 +611,11 @@ function drawHaze() {
 function drawScene(flight) {
   context.clearRect(0, 0, width, height);
   const sky = context.createLinearGradient(0, 0, 0, height);
-  sky.addColorStop(0, "#5f9fcf");
-  sky.addColorStop(0.55, "#a5cde6");
-  sky.addColorStop(1, "#e0e9dd");
+  for (const [stop, color] of skyStops(state.environment)) sky.addColorStop(stop, color);
   context.fillStyle = sky;
   context.fillRect(0, 0, width, height);
   setCamera(flight);
+  if (state.environment.night) drawStars();
   focal = width * (state.external ? 0.75 : 0.58);
   // Match the horizon to the camera's world-space ground intersection.
   const groundScreen = clipPolygon([[0, 0], [width, 0], [width, height], [0, height]], (p) => -(
@@ -548,7 +627,7 @@ function drawScene(flight) {
     else context.lineTo(x, y);
   });
   context.closePath();
-  context.fillStyle = "#528c9c";
+  context.fillStyle = shade("#528c9c");
   context.fill();
   const { ground, solids: trees } = terrain(flight.x, flight.y);
   const solids = [...trees];
@@ -564,6 +643,7 @@ function drawScene(flight) {
     .filter(([, distance]) => distance < 50000)
     .sort((a, b) => b[1] - a[1])
     .forEach(([airport]) => runway(airport));
+  if (state.environment.night) drawNightLights();
   if (state.external) solids.push(...drawPlane(flight));
   solids.push(...london.solids);
   solids.push(...region.solids.filter(([points, , far]) => points.some(
@@ -572,6 +652,7 @@ function drawScene(flight) {
   const depth = ([points]) => points.reduce((sum, p) => sum + cameraPoint(p)[2], 0) / points.length;
   const ordered = solids.map((surface) => [surface, depth(surface)]).sort((a, b) => b[1] - a[1]);
   for (const [[points, color, far]] of ordered) polygon(points, color, far ? 120000 : 60000);
+  if (state.environment.night && state.external) drawAircraftLights(flight);
   drawHaze();
   if (!state.external) {
     drawCockpit(flight);
