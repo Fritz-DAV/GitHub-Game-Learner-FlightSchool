@@ -11,7 +11,7 @@ export function formatDistance(metres) {
   return metres < 2000 ? `${Math.round(metres)} m` : `${(metres / 1000).toFixed(1)} km`;
 }
 
-function trace(ctx, points) {
+export function trace(ctx, points) {
   ctx.beginPath();
   points.forEach((p, i) => (i === 0 ? ctx.moveTo(...p) : ctx.lineTo(...p)));
 }
@@ -107,4 +107,98 @@ export function drawAltitudeChart(ctx, w, h, summary) {
   ctx.textAlign = "center";
   ctx.fillText("0", left, h - 6);
   ctx.fillText(formatDuration(duration), right - 30, h - 6);
+}
+
+// Damage kind -> points lost per part (game scores only).
+const CONDITION_LOSS = Object.freeze({
+  tyres: { wheels: 40 },
+  gear: { wheels: 60, integrity: 20 },
+  nose_gear: { wheels: 60, integrity: 20 },
+  belly: { wheels: 30, engines: 25, integrity: 35 },
+  terrain: { wheels: 60, engines: 15, integrity: 30 },
+  wing: { wings: 60, integrity: 25 },
+  tail: { integrity: 15 },
+  overspeed: { wings: 30, integrity: 40 },
+  stall: { wings: 10, integrity: 20 },
+});
+
+export const CONDITION_PARTS = Object.freeze([
+  ["integrity", "General integrity"], ["wings", "Wings"], ["engines", "Engines"], ["wheels", "Wheels"],
+]);
+
+// Each part rated out of 100, 100 being undamaged; severity (0..1) scales each kind's loss.
+export function aircraftCondition(damageKinds, severity = {}) {
+  const condition = { integrity: 100, wings: 100, engines: 100, wheels: 100 };
+  for (const kind of damageKinds) {
+    for (const [part, loss] of Object.entries(CONDITION_LOSS[kind] ?? {})) condition[part] -= loss * (severity[kind] ?? 1);
+  }
+  for (const part of Object.keys(condition)) condition[part] = Math.max(0, Math.round(condition[part]));
+  return condition;
+}
+
+// Which individual parts each damage kind hits; "side" is the low-wing (touchdown bank) side.
+const PART_HITS = Object.freeze({
+  tyres: ["sideWheel"], gear: ["leftWheel", "rightWheel"], nose_gear: ["noseWheel"],
+  belly: ["noseWheel", "leftWheel", "rightWheel", "leftEngine", "rightEngine"],
+  terrain: ["noseWheel", "leftWheel", "rightWheel", "leftEngine", "rightEngine"],
+  wing: ["sideWing", "sideEngine"], overspeed: ["leftWing", "rightWing"], stall: ["leftWing", "rightWing"],
+});
+
+// Per-component ratings for the top-down drawing; side is 1 for right, -1 for left.
+export function componentCondition(damageKinds, severity = {}, side = 1) {
+  const parts = {};
+  for (const name of ["noseWheel", "leftWheel", "rightWheel", "leftEngine", "rightEngine", "leftWing", "rightWing"]) parts[name] = 100;
+  const prefix = side < 0 ? "left" : "right";
+  for (const kind of damageKinds) {
+    const loss = CONDITION_LOSS[kind] ?? {};
+    for (const hit of PART_HITS[kind] ?? []) {
+      const name = hit.replace(/^side(.)/, (match, letter) => prefix + letter);
+      const group = name.endsWith("Wheel") ? "wheels" : name.endsWith("Engine") ? "engines" : "wings";
+      parts[name] -= (loss[group] ?? 0) * (severity[kind] ?? 1);
+    }
+  }
+  for (const name of Object.keys(parts)) parts[name] = Math.max(0, Math.round(parts[name]));
+  return parts;
+}
+
+// White when undamaged, shading to deep red as the rating falls.
+export function conditionColor(value) {
+  const fade = Math.round(255 * Math.min(Math.max(value, 0), 100) / 100);
+  return `rgb(255, ${fade}, ${fade})`;
+}
+
+// Tiny top-down aircraft with each component coloured by its condition.
+export function drawAircraftCondition(ctx, w, h, condition, parts = componentCondition([])) {
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = "#13232c";
+  ctx.fillRect(0, 0, w, h);
+  ctx.save();
+  ctx.translate(w / 2, h / 2);
+  const s = Math.min(w / 100, h / 100);
+  ctx.scale(s, s);
+  ctx.lineJoin = "round";
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = "#0b161c";
+  const shape = (points, value) => {
+    trace(ctx, points);
+    ctx.closePath();
+    ctx.fillStyle = conditionColor(value);
+    ctx.fill();
+    ctx.stroke();
+  };
+  const box = (x, y, bw, bh, value) => {
+    ctx.fillStyle = conditionColor(value);
+    ctx.fillRect(x, y, bw, bh);
+    ctx.strokeRect(x, y, bw, bh);
+  };
+  shape([[-14, 30], [14, 30], [4, 40], [-4, 40]], condition.integrity);
+  shape([[-24, 6], [-5, -6], [-5, 6], [-24, 14]], parts.leftWing);
+  shape([[24, 6], [5, -6], [5, 6], [24, 14]], parts.rightWing);
+  box(-20, 2, 6, 14, parts.leftEngine);
+  box(14, 2, 6, 14, parts.rightEngine);
+  shape([[0, -44], [6, -34], [5, -20], [4, 34], [-4, 34], [-5, -20], [-6, -34]], condition.integrity);
+  box(-1.5, -35, 3, 6, parts.noseWheel);
+  box(-10.5, 5, 3, 6, parts.leftWheel);
+  box(7.5, 5, 3, 6, parts.rightWheel);
+  ctx.restore();
 }

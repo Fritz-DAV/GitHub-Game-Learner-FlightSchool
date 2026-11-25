@@ -1,5 +1,5 @@
 import { AIRPORTS, airportPosition, allRunways } from "./flight-model.mjs";
-import { CITY_OUTLINES, ROADS, airportClear, geographic, inCity, isLand } from "./scenery.mjs";
+import { CITY_OUTLINES, ROADS, TALL_CITIES, airportClear, geographic, inCity, isLand, isMotorway } from "./scenery.mjs";
 
 export const FOG_CHANCE = 0.2; // share of "random" flights that start in fog
 export const NIGHT_CHANCE = 0.35; // share of "random" flights that start at night
@@ -14,13 +14,13 @@ export function resolveNight(choice, random = Math.random) {
 }
 
 const SKY = {
-  day: [[0, "#5f9fcf"], [0.55, "#a5cde6"], [1, "#c3dcec"]],
+  clearDay: [[0, "#5f9fcf"], [0.55, "#a5cde6"], [1, "#c3dcec"]],
   foggyDay: [[0, "#9fb3c2"], [0.55, "#c9d3d8"], [1, "#e0e6e6"]],
-  night: [[0, "#02040a"], [0.55, "#0a1424"], [1, "#18283d"]],
+  clearNight: [[0, "#02040a"], [0.55, "#0a1424"], [1, "#18283d"]],
   foggyNight: [[0, "#0b1018"], [0.55, "#1a222d"], [1, "#2a3442"]],
 };
 export function skyStops({ foggy, night }) {
-  return SKY[`${foggy ? "foggy" : ""}${night ? (foggy ? "Night" : "night") : (foggy ? "Day" : "day")}`];
+  return SKY[`${foggy ? "foggy" : "clear"}${night ? "Night" : "Day"}`];
 }
 
 // Fog is the only thing that blends the distance into the sky.
@@ -69,7 +69,7 @@ const hash = (a, b) => ((Math.imul(a, 73856093) ^ Math.imul(b, 19349663)) >>> 0)
 
 function cityLights(lights) {
   for (const city of CITY_OUTLINES) {
-    const tall = ["London", "Paris"].includes(city.name);
+    const tall = TALL_CITIES.has(city.name);
     const count = tall ? 1100 : 260;
     const seed = Math.trunc(city.lon * 1000);
     for (let i = 0; i < count * 3; i += 1) {
@@ -86,7 +86,7 @@ function cityLights(lights) {
 
 function motorwayLights(lights) {
   for (const [name, route] of ROADS) {
-    if (!name.startsWith("M") && !["A16", "A1 France"].includes(name)) continue;
+    if (!isMotorway(name)) continue;
     const points = route.map((p) => geographic(...p));
     let side = 1;
     points.slice(1).forEach(([bx, by], i) => {
@@ -130,13 +130,14 @@ function runwayLights(lights, runway) {
 // All static night lights as [x, y, height, colourIndex, size] grouped by colour.
 let cached = null;
 export function nightLights() {
-  if (cached) return cached;
-  const lights = [];
-  cityLights(lights);
-  motorwayLights(lights);
-  for (const airport of AIRPORTS) {
-    for (const runway of allRunways(airport)) runwayLights(lights, runway);
+  if (!cached) {
+    const lights = [];
+    cityLights(lights);
+    motorwayLights(lights);
+    for (const airport of AIRPORTS) {
+      for (const runway of allRunways(airport)) runwayLights(lights, runway);
+    }
+    cached = lights.sort((a, b) => a[3] - b[3]);
   }
-  cached = lights.sort((a, b) => a[3] - b[3]);
   return cached;
 }

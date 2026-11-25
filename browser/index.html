@@ -93,6 +93,14 @@
               <figure><canvas id="summary-map" aria-label="Flight path against planned route"></canvas><figcaption>Route flown against the planned route</figcaption></figure>
               <figure><canvas id="summary-altitude" aria-label="Altitude through the flight"></canvas><figcaption>Altitude through the flight</figcaption></figure>
             </div>
+            <section class="condition" aria-labelledby="condition-title">
+              <canvas id="summary-condition" aria-label="Top-down aircraft condition"></canvas>
+              <div>
+                <h3 id="condition-title">Aircraft condition</h3>
+                <ul id="condition-list"></ul>
+                <ul id="damage-log" class="damage-log" aria-label="Damage log"></ul>
+              </div>
+            </section>
             <div class="summary-actions">
               <button id="summary-again" class="primary" type="button">Fly again</button>
               <button id="summary-menu" class="quiet" type="button">Change flight</button>

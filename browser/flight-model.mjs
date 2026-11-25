@@ -34,7 +34,12 @@ const DAMAGE = Object.freeze({
   terrain: ["Off-runway landing: gear torn by rough ground", 0.45, true],
   wing: ["Wing strike", 0.25, true],
   tail: ["Tail strike", 0.03, false],
+  overspeed: ["Overspeed: airframe overstressed", 0, false],
+  stall: ["Stall: airframe overstressed", 0, false],
 });
+
+// Scales a 0..1 overshoot of a damage threshold into a severity of 0.3..1.
+const severity = (overshoot) => Math.min(1, Math.max(0.3, 0.3 + 0.7 * overshoot));
 
 export const AIRPORTS = Object.freeze([
   Object.freeze({ name: "Heathrow Airport, London", code: "EGLL", latitude: 51.4775, longitude: -0.4614, runwayHeading: 90, runwayLength: 3902, runwayWidth: 50,
@@ -126,6 +131,8 @@ export class Flight {
     this.hasFlown = false;
     this.crashed = this.completed = this.stalled = false;
     this.damageKinds = [];
+    this.damageSeverity = {};
+    this.damageLog = [];
     this.dragDamage = 0;
     this.unflyable = false;
     this.veer = 1;
@@ -166,12 +173,30 @@ export class Flight {
     return this.damageKinds.map((kind) => (kind === "wing" ? wing : DAMAGE[kind][0]));
   }
 
-  addDamage(kind) {
-    if (this.damageKinds.includes(kind)) return;
+  // Severity runs 0..1; repeat damage of one kind keeps the worst level.
+  addDamage(kind, level = 1, detail = "") {
+    level = Math.min(1, Math.max(0, level));
+    if (this.damageKinds.includes(kind)) {
+      if (level > this.damageSeverity[kind]) {
+        this.damageSeverity[kind] = level;
+        this.damageLog.push({ time: this.time, kind, label: DAMAGE[kind][0], severity: level, detail });
+      }
+      return;
+    }
     this.damageKinds.push(kind);
+    this.damageSeverity[kind] = level;
+    this.damageLog.push({ time: this.time, kind, label: DAMAGE[kind][0], severity: level, detail });
     const [, drag, grounded] = DAMAGE[kind];
     this.dragDamage += drag;
     this.unflyable = this.unflyable || grounded;
+  }
+
+  // Overspeed and stall stress build up in flight and are rated by how long they lasted.
+  assessStress() {
+    const fast = this.overspeedTime / 10;
+    if (fast >= 0.1) this.addDamage("overspeed", fast, `${this.overspeedTime.toFixed(0)} s above 90% of max speed`);
+    const stall = (this.stallTime - 3) / 15;
+    if (stall > 0) this.addDamage("stall", stall, `${this.stallTime.toFixed(0)} s stalled`);
   }
 
   damageMessage(prefix) {
@@ -300,7 +325,7 @@ export class Flight {
       this.vz = this.unflyable ? 0 : Math.max(0, this.vz + accelerations[2] * dt);
       if (this.pitch > this.aircraft.tailStrikeAngle && this.groundSpeed > 10
         && !this.damageKinds.includes("tail")) {
-        this.addDamage("tail");
+        this.addDamage("tail", severity((this.pitch - this.aircraft.tailStrikeAngle) / 5), "tail strike on rotation");
         this.message = this.damageMessage("WARNING — tail strike on rotation");
       }
     } else {
@@ -326,6 +351,7 @@ export class Flight {
     }
     if (this.airspeed > this.aircraft.maxSpeed) {
       this.crashed = true;
+      this.addDamage("overspeed", 1, "exceeded maximum speed");
       this.message = "Overspeed: the aircraft was damaged. Press R to try again.";
     } else if (this.assessAtRest && this.onGround && this.groundSpeed < 0.5 && !this.completed) {
       this.assessAtRest = false;
@@ -381,6 +407,7 @@ export class Flight {
       ? Math.abs((((this.heading - runway.runwayHeading + 90) % 180 + 180) % 180) - 90) : 180;
     const sink = -this.vz;
     const speed = this.airspeed;
+    this.assessStress();
     this.veer = this.bank >= 0 ? 1 : -1;
     let along = 0;
     let across = 0;
@@ -397,18 +424,25 @@ export class Flight {
     else if (Math.abs(this.bank) > 45) destroyed = "A wing dug in and the aircraft cartwheeled";
     else if (alignment > 60 && runway) destroyed = "The aircraft slid sideways and rolled over";
     else if (!runway && speed > craft.landingSpeed * 1.5) destroyed = "High-speed impact off the runway";
-    if (this.gear < 0.99) this.addDamage("belly");
+    if (this.gear < 0.99) this.addDamage("belly", severity(sink / 6), "gear not down at touchdown");
     else {
-      if (sink > 5) this.addDamage("gear");
+      if (sink > 5) this.addDamage("gear", severity((sink - 5) / 3), `sink rate ${sink.toFixed(1)} m/s`);
       if (sink > 3 || speed > craft.landingSpeed * 1.1 || (alignment > 15 && alignment <= 30)) {
-        this.addDamage("tyres");
+        const overshoot = Math.max((sink - 3) / 2, (speed / craft.landingSpeed - 1.1) / 0.3, (alignment - 15) / 15);
+        this.addDamage("tyres", severity(overshoot), "hard or off-line touchdown");
       }
-      if (alignment > 30 && alignment <= 60 && runway) this.addDamage("gear");
-      if (this.pitch < -5) this.addDamage("nose_gear");
+      if (alignment > 30 && alignment <= 60 && runway) {
+        this.addDamage("gear", severity((alignment - 30) / 30), `${alignment.toFixed(0)}° off runway heading`);
+      }
+      if (this.pitch < -5) this.addDamage("nose_gear", severity((-5 - this.pitch) / 10), "nose-down touchdown");
     }
-    if (!runway) this.addDamage("terrain");
-    if (Math.abs(this.bank) > craft.bankLimit) this.addDamage("wing");
-    if (this.pitch > craft.tailStrikeAngle) this.addDamage("tail");
+    if (!runway) this.addDamage("terrain", severity(speed / craft.landingSpeed - 0.5), "off-runway touchdown");
+    if (Math.abs(this.bank) > craft.bankLimit) {
+      this.addDamage("wing", severity((Math.abs(this.bank) - craft.bankLimit) / (45 - craft.bankLimit)), "wing low at touchdown");
+    }
+    if (this.pitch > craft.tailStrikeAngle) {
+      this.addDamage("tail", severity((this.pitch - craft.tailStrikeAngle) / 5), "tail low at touchdown");
+    }
     if (destroyed) {
       this.crashed = true;
       this.message = this.damageKinds.length
@@ -474,7 +508,7 @@ export function flightSummary(flight) {
     landing -= Math.min(15, Math.max(0, land.bank - 3) * 2);
     landing -= Math.min(20, Math.max(0, land.offset - 5) * 1.5);
     landing -= Math.min(15, Math.max(0, land.along - 0.6) * 50);
-    landing -= Math.min(40, 12 * flight.damageKinds.length);
+    landing -= Math.min(40, 12 * flight.damageKinds.filter((kind) => kind !== "overspeed" && kind !== "stall").length);
     if (!land.onRunway) landing = Math.min(landing, 20);
   }
 
@@ -484,5 +518,6 @@ export function flightSummary(flight) {
   return {
     scores, time: flight.time, airborneTime: Math.max(0, flight.time - liftoff),
     distance: flight.distance, plannedDistance: planned, track, planned: [start, end],
+    damageSeverity: { ...flight.damageSeverity }, side: flight.veer, damageLog: flight.damageLog.map((entry) => ({ ...entry })),
   };
 }

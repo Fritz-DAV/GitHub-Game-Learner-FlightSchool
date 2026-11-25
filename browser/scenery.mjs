@@ -57,6 +57,10 @@ export const HILLS = [
   [-0.25, 50.9, 270, 21000, 5000], [-4.08, 53.07, 1085, 12000, 10000],
   [-3.95, 50.58, 620, 15000, 13000], [-3.21, 54.45, 978, 14000, 14000],
 ];
+export const TALL_CITIES = new Set(["London", "Paris"]);
+export const isMotorway = (name) => name.startsWith("M") || name === "A16" || name === "A1 France";
+// Axis-aligned rectangle as four [x, y, z] corners.
+const rect = (x0, y0, x1, y1, z) => [[x0, y0, z], [x1, y0, z], [x1, y1, z], [x0, y1, z]];
 export function geographic(longitude, latitude) {
   return [longitude * Math.PI / 180 * 6371000 * Math.cos(50 * Math.PI / 180),
     (latitude - 50) * Math.PI / 180 * 6371000];
@@ -133,7 +137,7 @@ export function regionalScenery() {
   const solids = [];
   for (const [name, route] of ROADS) {
     const points = route.map((p) => geographic(...p));
-    const motorway = name.startsWith("M") || ["A16", "A1 France"].includes(name);
+    const motorway = isMotorway(name);
     roads.push(...ribbon(points, motorway ? 32 : 14, "#666b69"));
     if (motorway) roads.push(...ribbon(points, 3, "#b0b295"));
   }
@@ -168,7 +172,7 @@ export function regionalScenery() {
         }
       }
     }
-    const tall = ["London", "Paris"].includes(city);
+    const tall = TALL_CITIES.has(city);
     const count = tall ? 320 : 80;
     let placed = 0;
     for (let i = 0; i < count * 3 && placed < count; i += 1) {
@@ -182,15 +186,13 @@ export function regionalScenery() {
       const w = 100 + seed % 220;
       const d = 80 + seed % 150;
       const height = 8 + seed % 20 + (tall && placed < 10 ? 55 : 0);
-      const block = [[px - 260, py - 220, 0.01], [px + 260, py - 220, 0.01],
-        [px + 260, py + 220, 0.01], [px - 260, py + 220, 0.01]];
+      const block = rect(px - 260, py - 220, px + 260, py + 220, 0.01);
       if (block.every(([a, b]) => isLand(a, b) && airportClear(a, b))) {
         ground.push([block, ["#92917f", "#9d9685", "#888e7b"][i % 3]]);
       }
       ground.push(...ribbon([[px - w, py - d], [px + w, py - d]], 10, "#777872"));
       solids.push(...box(px, py, w, d, height));
-      solids.push([[[px - w / 2, py - d / 2, height], [px + w / 2, py - d / 2, height],
-        [px + w / 2, py + d / 2, height], [px - w / 2, py + d / 2, height]], "#916d58"]);
+      solids.push([rect(px - w / 2, py - d / 2, px + w / 2, py + d / 2, height), "#916d58"]);
     }
   }
   for (const [lon, lat, height, rx, ry] of HILLS) {
@@ -277,8 +279,7 @@ export function terrain(x, y) {
       const py = iy * 800;
       if (![[px, py], [px + 800, py], [px + 800, py + 800], [px, py + 800]]
         .every(([a, b]) => isLand(a, b))) continue;
-      ground.push([[[px, py, 0], [px + 800, py, 0], [px + 800, py + 800, 0], [px, py + 800, 0]],
-        fieldColors[seed % fieldColors.length]]);
+      ground.push([rect(px, py, px + 800, py + 800, 0), fieldColors[seed % fieldColors.length]]);
       ground.push(...ribbon([[px, py], [px + 800, py]], 5, "#4e6840"),
         ...ribbon([[px, py], [px, py + 800]], 5, "#4e6840"));
       if (Math.abs(ix - cx) > 4 || Math.abs(iy - cy) > 4) continue;
@@ -357,8 +358,7 @@ function airportScenery(airport) {
     const x = ax + dx;
     const y = ay + dy;
     if (h > 12) {
-      ground.push([[[x - w / 2 - 60, y - d - 80, 0.03], [x + w / 2 + 60, y - d - 80, 0.03],
-        [x + w / 2 + 60, y + d + 80, 0.03], [x - w / 2 - 60, y + d + 80, 0.03]], "#89908a"]);
+      ground.push([rect(x - w / 2 - 60, y - d - 80, x + w / 2 + 60, y + d + 80, 0.03), "#89908a"]);
       let across = Infinity;
       let heading = 0;
       for (const runway of allRunways(airport)) {
@@ -391,8 +391,7 @@ export function heathrowScenery() {
   for (const [dx, dy, w, d] of [[-1250, 650, 400, 180], [150, 500, 500, 150], [1000, -650, 450, 180]]) {
     const x = hx + dx;
     const y = hy + dy;
-    ground.push([[[x - w, y - d * 2, 0.03], [x + w, y - d * 2, 0.03],
-      [x + w, y + d * 2, 0.03], [x - w, y + d * 2, 0.03]], "#89908a"]);
+    ground.push([rect(x - w, y - d * 2, x + w, y + d * 2, 0.03), "#89908a"]);
     ground.push(...ribbon([[x, y], [x, hy]], 28, "#737b7c"));
     solids.push(...box(x, y, w, d, 24));
     for (const offset of [-0.35, 0, 0.35]) solids.push(...box(x + w * offset, y - d * 0.7, 24, 160, 10));
